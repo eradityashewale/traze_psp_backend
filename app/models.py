@@ -1,0 +1,198 @@
+import enum
+from datetime import datetime
+from decimal import Decimal
+
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Enum,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database import Base
+from app.db_types import BinaryString, UTCDateTime, now6
+
+
+class UserRole(str, enum.Enum):
+    admin = "admin"  # manages PSPs, views everything, does not decide
+    psp = "psp"  # a PSP login: reviews and decides its own PSP's requests
+
+
+class PspStatus(str, enum.Enum):
+    active = "active"
+    inactive = "inactive"
+
+
+class TxStatus(str, enum.Enum):
+    pending = "pending"
+    processing = "processing"
+    approved = "approved"
+    rejected = "rejected"
+
+
+FINAL_STATUSES = {TxStatus.approved, TxStatus.rejected}
+OPEN_STATUSES = {TxStatus.pending, TxStatus.processing}
+
+
+def _enum(e: type[enum.Enum], name: str) -> Enum:
+    return Enum(e, name=name, values_callable=lambda x: [m.value for m in x])
+
+
+class PortalUser(Base):
+    """A portal login: either an admin, or a login belonging to one PSP."""
+
+    __tablename__ = "portal_users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    full_name: Mapped[str] = mapped_column(String(200))
+    password_hash: Mapped[str] = mapped_column(String(100))
+    role: Mapped[UserRole] = mapped_column(_enum(UserRole, "user_role"), default=UserRole.psp)
+    # Set for role=psp. Deleting the PSP deletes its logins.
+    psp_id: Mapped[int | None] = mapped_column(ForeignKey("psps.id", ondelete="CASCADE"), index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    failed_login_count: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    last_login_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=now6())
+
+    psp: Mapped["Psp | None"] = relationship(lazy="selectin")
+
+    @property
+    def psp_code(self) -> str | None:
+        return self.psp.psp_code if self.psp else None
+
+
+class Psp(Base):
+    __tablename__ = "psps"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    psp_code: Mapped[str] = mapped_column(String(50), unique=True, index=True)
+    psp_name: Mapped[str] = mapped_column(String(200))
+
+    # Token and secret are stored as SHA-256 hashes; plaintext is shown only once.
+    api_token_hash: Mapped[str] = mapped_column(BinaryString(64), unique=True, index=True)
+    api_secret_hash: Mapped[str] = mapped_column(BinaryString(64))
+    api_token_expires_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    credentials_rotated_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    # Previous credentials stay valid during the rotation grace period.
+    prev_api_token_hash: Mapped[str | None] = mapped_column(BinaryString(64), index=True)
+    prev_api_secret_hash: Mapped[str | None] = mapped_column(BinaryString(64))
+    prev_valid_until: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+    # The salt has to be readable to compute MD5 signatures.
+    signature_salt: Mapped[str] = mapped_column(BinaryString(128))
+    # CRM's RSA public key (PEM). When set, every CRM POST must carry an X-Signature header.
+    client_public_key: Mapped[str | None] = mapped_column(Text)
+
+    callback_url: Mapped[str] = mapped_column(String(500))
+    callback_username: Mapped[str] = mapped_column(String(100))
+    callback_password: Mapped[str] = mapped_column(String(200))
+
+    bank_accounts: Mapped[list[str]] = mapped_column(JSON, default=list)
+    allowed_currencies: Mapped[list[str]] = mapped_column(JSON, default=list)
+    status: Mapped[PspStatus] = mapped_column(_enum(PspStatus, "psp_status"), default=PspStatus.active)
+    ifsc_code: Mapped[str | None] = mapped_column(String(11))
+    account_number: Mapped[str | None] = mapped_column(String(34))  # PSP's primary bank account
+    contact_email: Mapped[str | None] = mapped_column(String(255))
+    # {"technical": {...}, "business": {...}, "customer_service": {...}} — email, phone, hours
+    contacts: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=now6())
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, server_default=now6(), onupdate=now6()
+    )
+
+    @property
+    def has_client_public_key(self) -> bool:
+        return bool(self.client_public_key)
+
+
+class TransactionMixin:
+    """Columns shared by deposits and withdrawals."""
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    public_id: Mapped[str | None] = mapped_column(String(20), unique=True, index=True)
+    psp_id: Mapped[int | None] = mapped_column(ForeignKey("psps.id", ondelete="SET NULL"), index=True)
+    customer_name: Mapped[str] = mapped_column(String(200))
+    customer_email: Mapped[str] = mapped_column(String(255), index=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    currency: Mapped[str] = mapped_column(String(3))
+    comment: Mapped[str | None] = mapped_column(Text)  # note from the customer / CRM
+    idempotency_key: Mapped[str | None] = mapped_column(BinaryString(100))
+
+    status: Mapped[TxStatus] = mapped_column(
+        _enum(TxStatus, "tx_status"), default=TxStatus.pending, index=True
+    )
+    review_comment: Mapped[str | None] = mapped_column(Text)  # approval / rejection reason
+    reviewed_by_id: Mapped[int | None] = mapped_column(ForeignKey("portal_users.id", ondelete="SET NULL"))
+    reviewed_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+    # Callback outbox: the worker delivers any row whose callback_due_at has passed.
+    # Stored in the DB so pending callbacks survive restarts and DR failover.
+    callback_due_at: Mapped[datetime | None] = mapped_column(UTCDateTime, index=True)
+    callback_sent: Mapped[bool] = mapped_column(Boolean, default=False)
+    callback_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    callback_last_error: Mapped[str | None] = mapped_column(Text)
+    callback_sent_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=now6(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, server_default=now6(), onupdate=now6()
+    )
+
+    @property
+    def psp_code(self) -> str | None:
+        return self.psp.psp_code if self.psp else None
+
+    @property
+    def reviewed_by(self) -> str | None:
+        return self.reviewer.full_name if self.reviewer else None
+
+
+class Deposit(TransactionMixin, Base):
+    __tablename__ = "deposits"
+    __table_args__ = (UniqueConstraint("psp_id", "idempotency_key", name="uq_deposit_idempotency"),)
+    PREFIX = "DEP"
+
+    bank_account_id: Mapped[str] = mapped_column(String(50))
+    screenshot_url: Mapped[str] = mapped_column(String(1000))
+    utr_number: Mapped[str | None] = mapped_column(String(100), index=True)
+
+    psp: Mapped[Psp | None] = relationship(lazy="selectin")
+    reviewer: Mapped[PortalUser | None] = relationship(lazy="selectin")
+
+
+class Withdrawal(TransactionMixin, Base):
+    __tablename__ = "withdrawals"
+    __table_args__ = (UniqueConstraint("psp_id", "idempotency_key", name="uq_withdrawal_idempotency"),)
+    PREFIX = "WDL"
+
+    dest_bank_name: Mapped[str] = mapped_column(String(200))
+    dest_account_number: Mapped[str] = mapped_column(String(50))
+    dest_ifsc: Mapped[str] = mapped_column(String(11))
+    dest_account_name: Mapped[str] = mapped_column(String(200))
+    source_account_id: Mapped[str] = mapped_column(String(50))
+
+    psp: Mapped[Psp | None] = relationship(lazy="selectin")
+    reviewer: Mapped[PortalUser | None] = relationship(lazy="selectin")
+
+
+class AuditLog(Base):
+    """Append-only trail of security-relevant actions (PCI DSS requirement 10)."""
+
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    actor_type: Mapped[str] = mapped_column(String(20))  # user | psp | system
+    actor_id: Mapped[str | None] = mapped_column(String(100))
+    action: Mapped[str] = mapped_column(String(100), index=True)
+    target: Mapped[str | None] = mapped_column(String(100), index=True)
+    details: Mapped[dict | None] = mapped_column(JSON)
+    ip_address: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=now6(), index=True)

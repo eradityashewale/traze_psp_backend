@@ -1,0 +1,91 @@
+from functools import lru_cache
+from typing import Literal
+from urllib.parse import quote
+
+from pydantic import model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    # --- environment (checklist 1.2 / 1.3) ---
+    environment: Literal["local", "uat", "production"] = "local"
+    public_api_base_url: str = "http://localhost:8000"  # e.g. https://<uat-host>/PSPtest
+    admin_portal_url: str | None = None  # e.g. https://<uat-host>/PSPtestadmin/
+
+    # Either set DB_NAME / DB_USER / DB_PASS / DB_HOST, or a full DATABASE_URL (which wins).
+    db_name: str | None = None
+    db_user: str | None = None
+    db_pass: str = ""
+    db_host: str = "localhost:3306"  # host or host:port
+    database_url: str = ""
+    # Apply pending Alembic migrations when the app starts. Turn off to run `alembic upgrade head` yourself.
+    run_migrations_on_startup: bool = True
+
+    @model_validator(mode="after")
+    def build_database_url(self):
+        url = self.database_url
+        if not url:
+            if not (self.db_name and self.db_user):
+                raise ValueError("Set DB_NAME and DB_USER (plus DB_PASS, DB_HOST) or DATABASE_URL in .env")
+            user, password = quote(self.db_user, safe=""), quote(self.db_pass, safe="")
+            url = f"mysql+pymysql://{user}:{password}@{self.db_host}/{self.db_name}"
+        elif url.startswith("mysql://"):
+            url = "mysql+pymysql://" + url[len("mysql://"):]
+        elif not url.startswith("mysql+"):
+            raise ValueError("DATABASE_URL must be a MySQL link, e.g. mysql://user:pass@localhost:3306/psp_portal")
+        self.database_url = url
+        return self
+
+    jwt_secret: str
+    jwt_algorithm: str = "HS256"
+    jwt_expires_minutes: int = 60
+
+    bootstrap_admin_email: str | None = None
+    bootstrap_admin_password: str | None = None
+
+    # --- HTTPS (checklist 2 / 8) ---
+    enforce_https: bool = False  # set true in UAT/production
+    trust_forwarded_proto: bool = True  # honour X-Forwarded-Proto from the TLS proxy
+    min_rsa_key_bits: int = 2048
+
+    # --- API credentials (checklist 3 / 5) ---
+    api_token_validity_days: int = 90  # quarterly rotation
+    rotation_grace_hours: int = 72  # old token keeps working this long after a rotation
+
+    # --- MD5 signature (checklist 6) ---
+    require_signature: bool = True
+    signature_max_skew_seconds: int = 300  # 0 disables the timestamp freshness check
+
+    # --- public / private key (checklist 7) ---
+    portal_private_key_path: str = "keys/portal_private_key.pem"
+
+    # --- login protection ---
+    max_failed_logins: int = 5
+    lockout_minutes: int = 15
+
+    # --- callbacks (checklist 4 / 11) ---
+    callback_timeout_seconds: float = 10
+    callback_max_retries: int = 3
+    callback_worker_interval_seconds: float = 2
+    allow_http_callbacks: bool = False
+
+    # --- informational answers for the questionnaire (checklist 10-13) ---
+    pci_dss_level: str = "To be confirmed with the PSP team"
+    dr_description: str = "Secondary DR site; failover is automatic on the PSP side, API URLs do not change"
+    monitoring_channel: str = "Skype/WhatsApp group shared at onboarding; GET /health/ready; error codes at /api/v1/meta/error-codes"
+    support_technical: str = ""
+    support_business: str = ""
+    support_customer_service: str = ""
+
+    cors_origins: str = ""  # comma-separated
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
