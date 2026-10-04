@@ -88,29 +88,16 @@ class Psp(Base):
 
     # The salt has to be readable to compute MD5 signatures.
     signature_salt: Mapped[str] = mapped_column(BinaryString(128))
-    # CRM's RSA public key (PEM). When set, every CRM POST must carry an X-Signature header.
-    client_public_key: Mapped[str | None] = mapped_column(Text)
 
-    callback_url: Mapped[str] = mapped_column(String(500))
-    callback_username: Mapped[str] = mapped_column(String(100))
-    callback_password: Mapped[str] = mapped_column(String(200))
 
-    bank_accounts: Mapped[list[str]] = mapped_column(JSON, default=list)
-    allowed_currencies: Mapped[list[str]] = mapped_column(JSON, default=list)
     status: Mapped[PspStatus] = mapped_column(_enum(PspStatus, "psp_status"), default=PspStatus.active)
     ifsc_code: Mapped[str | None] = mapped_column(String(11))
-    account_number: Mapped[str | None] = mapped_column(String(34))  # PSP's primary bank account
+    account_number: Mapped[str | None] = mapped_column(String(34))  # the PSP's one bank account
     contact_email: Mapped[str | None] = mapped_column(String(255))
-    # {"technical": {...}, "business": {...}, "customer_service": {...}} — email, phone, hours
-    contacts: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=now6())
     updated_at: Mapped[datetime] = mapped_column(
         UTCDateTime, server_default=now6(), onupdate=now6()
     )
-
-    @property
-    def has_client_public_key(self) -> bool:
-        return bool(self.client_public_key)
 
 
 class TransactionMixin:

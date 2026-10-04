@@ -12,7 +12,7 @@ Small backend for the PSP Portal. The CRM submits deposits and withdrawals, the 
 | 1.2 / 1.3 | UAT / Production credentials | `ENVIRONMENT=uat\|production`, `PUBLIC_API_BASE_URL`, `ADMIN_PORTAL_URL`. Portal logins are created per user by an admin. |
 | 2 | HTTPS/SSL | `ENFORCE_HTTPS=true` rejects plain HTTP with `E1008` and sends HSTS. Callback URLs must be `https://`. |
 | 3 | Request authentication | `Authorization: Bearer <API_TOKEN>` + `X-API-Secret` |
-| 4 | HTTP Basic auth for webhooks | Callback username and password are **required** on every PSP |
+| 4 | HTTP Basic auth for webhooks | `CRM_CALLBACK_USERNAME` / `CRM_CALLBACK_PASSWORD` are sent on every callback and are **required** in UAT and production |
 | 5 | Periodic token rotation | Tokens expire after `API_TOKEN_VALIDITY_DAYS` (90 = quarterly). Rotation keeps the old token valid for `ROTATION_GRACE_HOURS`. |
 | 6 | Salted hash of critical fields | MD5 signature on requests **and** callbacks |
 | 7 | Public/private key | CRM signs request bodies with RSA (`X-Signature`). The portal signs callbacks with its own key (`GET /api/v1/meta/public-key`). |
@@ -21,7 +21,7 @@ Small backend for the PSP Portal. The CRM submits deposits and withdrawals, the 
 | 10 | PCI compliance | Audit trail (`/api/v1/audit-logs`), hashed credentials, no card data stored. The **level itself** is a business answer (`PCI_DSS_LEVEL`). |
 | 11 | DR site | Stateless app plus a DB-backed callback queue: nothing is lost on restart or failover, and several instances can run safely. DR infrastructure itself is ops. |
 | 12 | Availability monitoring | `GET /health`, `GET /health/ready` (DB + callback backlog), stable error codes (`GET /api/v1/meta/error-codes`) |
-| 13 | Contacts & service hours | `contacts.technical / business / customer_service` on each PSP (email, phone, hours) |
+| 13 | Contacts & service hours | One `contact_email` on each PSP |
 
 `GET /api/v1/psps/{psp_code}/questionnaire` returns the whole checklist filled in for a PSP.
 
@@ -41,7 +41,7 @@ uvicorn app.main:app --reload
 * Swagger UI: http://localhost:8000/docs
 * On startup the database is created if it doesn't exist (when the user has permission), then pending migrations are applied (see **Database migrations**). The first admin comes from `BOOTSTRAP_ADMIN_*` and is created only if no users exist yet.
 * On first start the portal RSA key pair is generated at `keys/portal_private_key.pem`. In UAT and production, mount a backed-up key there; CRMs pin its public key. The `keys/` folder is git-ignored.
-* With `ENVIRONMENT=uat` or `production`, the app **refuses to start** if any of these hold: HTTPS not enforced, HTTP callbacks allowed, signatures off, or a short JWT secret.
+* With `ENVIRONMENT=uat` or `production`, the app **refuses to start** if any of these hold: HTTPS not enforced, HTTP callbacks allowed, the CRM callback URL or its username/password not set, signatures off, or a short JWT secret.
 
 ## Database migrations
 
@@ -54,6 +54,13 @@ Schema changes are managed with **Alembic**. Migration files live in `alembic/ve
 | `0003` | Makes `deposits.bank_account_id` optional (admin-submitted deposits have none) |
 | `0004` | Makes the withdrawal destination bank details optional (admin-submitted withdrawals may omit them) |
 | `0005` | Adds `withdrawals.screenshot_url` (optional screenshot) |
+| `0006` | Resets every PSP's `allowed_currencies` to `["INR"]` |
+| `0007` | Drops `psps.contacts` (a PSP has one `contact_email`) |
+| `0008` | Replaces the `psps.bank_accounts` list with a single `psps.bank_account_id` (keeps the first entry) |
+| `0009` | Drops `psps.callback_url`, `callback_username` and `callback_password` (the CRM callback is set in `.env`) |
+| `0010` | Drops `psps.allowed_currencies` (INR is the only currency) |
+| `0011` | Drops `psps.bank_account_id`; `psps.account_number` is the PSP's one bank account |
+| `0012` | Drops `psps.client_public_key` (the CRM's key is a file set in `.env`) |
 
 By default the app runs `alembic upgrade head` when it starts (`RUN_MIGRATIONS_ON_STARTUP=true`), so a new migration is applied on the next start. Set it to `false` to apply migrations yourself.
 
@@ -99,15 +106,15 @@ Creating a PSP also creates its portal login (`login_email`, `login_password`). 
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/api/v1/psps` | list |
-| POST | `/api/v1/psps` | create the PSP **and its portal login** (`login_email`, `login_password`). `psp_code` is auto-generated (`PSP-XXXXXXXX`) and returned in the response; do not send it. **The response shows `api_token`, `api_secret` and `signature_salt` once.** |
+| POST | `/api/v1/psps` | create the PSP **and its portal login** (`login_email`, `login_password`). `psp_code` is auto-generated (`PSP-XXXXXXXX`) and returned in the response; do not send it. A PSP has one bank account, given by `account_number` (required); the CRM sends that same number as `bank_account_id` on deposits and `source_account_id` on withdrawals. **The response shows `api_token`, `api_secret` and `signature_salt` once.** |
 | GET | `/api/v1/psps/{psp_code}` | |
-| PUT | `/api/v1/psps/{psp_code}` | partial update: status, callback, bank accounts, `ifsc_code`, `account_number`, contacts, `client_public_key` |
+| PUT | `/api/v1/psps/{psp_code}` | partial update: status, `ifsc_code`, `account_number`, `contact_email` |
 | POST | `/api/v1/psps/{psp_code}/rotate-credentials` | `{grace_hours?, rotate_salt?}` |
 | DELETE | `/api/v1/psps/{psp_code}` | refused while requests are pending or processing. Removes the PSP's logins; transaction history is kept. |
 | GET | `/api/v1/psps/{psp_code}/questionnaire` | filled New PSP Checklist |
 
 ### CRM API
-Headers: `Authorization: Bearer <API_TOKEN>`, `X-API-Secret: <API_SECRET>`, plus `X-Signature` on POSTs if the PSP has a `client_public_key`.
+Headers: `Authorization: Bearer <API_TOKEN>`, `X-API-Secret: <API_SECRET>`, plus `X-Signature` on POSTs if `CRM_PUBLIC_KEY_PATH` is set.
 
 | Method | Path |
 |---|---|
@@ -116,7 +123,9 @@ Headers: `Authorization: Bearer <API_TOKEN>`, `X-API-Secret: <API_SECRET>`, plus
 | POST | `/api/v1/withdrawals` |
 | GET | `/api/v1/withdrawals/{withdrawal_id}` |
 
-A repeated `idempotency_key` returns the existing record with `200`; a new one returns `201`.
+A repeated `idempotency_key` returns the existing record with `200`; a new one returns `201`. On a deposit the key is optional: the portal generates one when it is not sent.
+
+`INR` is the only currency. `currency` defaults to `INR` when it is not sent, and any other value is rejected with `E1000`. A PSP has no currency setting. A CRM deposit has no `timestamp`.
 
 ### Portal review (JWT)
 A PSP login only ever sees and acts on its own PSP's requests. An admin sees all of them and can submit new ones, but can't decide. Paths are the same for `deposits` and `withdrawals`:
@@ -138,7 +147,7 @@ Status flow: `pending → processing → approved | rejected`, or `pending → a
 Deposits and withdrawals are submitted as **`multipart/form-data`** (not JSON), on both the CRM API and the portal: the usual fields as form fields, plus the screenshot as a file field named `screenshot`. The file is stored in a private S3 bucket (`S3_BUCKET`, `AWS_REGION`), not on the app server.
 
 * Accepted: PNG, JPEG, WEBP or PDF, up to `SCREENSHOT_MAX_MB` (5). The type is checked from the file's content.
-* Deposit: a screenshot is required, either the `screenshot` file or a `screenshot_url` link to a file hosted elsewhere.
+* Deposit: the `screenshot` file is required on the CRM API. An admin submitting from the portal can send a `screenshot_url` link instead.
 * Withdrawal: the `screenshot` file is optional.
 * A repeated `idempotency_key` does not upload the file again.
 
@@ -146,8 +155,8 @@ Deposits and withdrawals are submitted as **`multipart/form-data`** (not JSON), 
 curl -X POST https://<host>/api/v1/deposits \
   -H "Authorization: Bearer <API_TOKEN>" -H "X-API-Secret: <API_SECRET>" \
   -F customer_name="Rahul Sharma" -F customer_email=rahul@example.com \
-  -F amount=1200 -F currency=INR -F bank_account_id=sbi \
-  -F timestamp=<timestamp> -F signature=<md5> \
+  -F amount=1200 -F bank_account_id=50100123456789 \
+  -F signature=<md5> \
   -F screenshot=@receipt.png
 ```
 
@@ -165,7 +174,7 @@ In portal responses `screenshot_url` is a presigned link valid for `S3_URL_EXPIR
 ## Error format
 
 ```json
-{ "success": false, "error_code": "E2002", "message": "Currency EUR is not allowed for this PSP", "details": [] }
+{ "success": false, "error_code": "E2003", "message": "Bank account sbi is not managed by this PSP", "details": [] }
 ```
 
 | Range | Area |
@@ -181,7 +190,7 @@ The full list is at `GET /api/v1/meta/error-codes`.
 ## Request security (CRM → portal)
 
 ### 1. MD5 signature (required)
-Every CRM `POST` includes `timestamp` (ISO-8601, UTC `...Z` or with an offset such as IST `...+05:30`, within ±5 min) and `signature`:
+Every CRM `POST` includes a `signature`. A withdrawal also includes `timestamp` (ISO-8601, UTC `...Z` or with an offset such as IST `...+05:30`, within ±5 min); a deposit has none.
 
 ```
 signature = md5("k1=v1&k2=v2&...&salt=<SIGNATURE_SALT>")   # keys sorted alphabetically
@@ -189,20 +198,22 @@ signature = md5("k1=v1&k2=v2&...&salt=<SIGNATURE_SALT>")   # keys sorted alphabe
 
 | Request | Signed fields |
 |---|---|
-| Deposit | `amount, bank_account_id, currency, customer_email, timestamp` |
+| Deposit | `amount, bank_account_id, customer_email` |
 | Withdrawal | `amount, currency, customer_email, dest_account_number, source_account_id, timestamp` |
 
 Amounts are written without trailing zeros (`12500`, `999.5`).
 
-### 2. RSA signature (when the PSP has a `client_public_key`)
+### 2. RSA signature (when `CRM_PUBLIC_KEY_PATH` is set)
+One CRM serves every PSP, so its public key is a PEM file on the server, pointed to by `CRM_PUBLIC_KEY_PATH` in `.env`. It is not part of a PSP. Leave it empty to skip this check.
+
 The CRM signs the **exact raw request body** (the multipart bytes as sent, boundaries and file included) with its private key: RSA PKCS#1 v1.5 + SHA-256, base64-encoded in the `X-Signature` header. Keys must be RSA with at least 2048 bits.
 
-To get the `timestamp` and MD5 `signature` by hand: `python scripts/sign_request.py deposit body.json <salt>` (add `--ist` for an IST timestamp), then send the printed values as form fields.
+To get the MD5 `signature` by hand (and the `timestamp` for a withdrawal): `python scripts/sign_request.py deposit body.json <salt>` (add `--ist` for an IST timestamp), then send the printed values as form fields.
 
 ## Callbacks (portal → CRM)
 
-After each approve or reject, the portal `POST`s to the PSP's `callback_url` with:
-* HTTP Basic auth (`callback_username` / `callback_password`)
+One CRM serves every PSP, so its callback endpoint is set once in `.env` (`CRM_CALLBACK_URL`, `CRM_CALLBACK_USERNAME`, `CRM_CALLBACK_PASSWORD`) and is not part of a PSP. After each approve or reject, the portal `POST`s to `CRM_CALLBACK_URL` with:
+* HTTP Basic auth (`CRM_CALLBACK_USERNAME` / `CRM_CALLBACK_PASSWORD`)
 * `X-Signature`: RSA-SHA256 of the raw body, signed with the portal key. Verify it with `/api/v1/meta/public-key`.
 * A `signature` field in the body: MD5 over `amount, currency, customer_email, <deposit_id|withdrawal_id>, status, timestamp` plus the salt.
 

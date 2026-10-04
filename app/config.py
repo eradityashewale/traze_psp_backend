@@ -60,6 +60,8 @@ class Settings(BaseSettings):
 
     # --- public / private key (checklist 7) ---
     portal_private_key_path: str = "keys/portal_private_key.pem"
+    # The CRM's RSA public key (PEM file). When set, every CRM POST must carry an X-Signature header.
+    crm_public_key_path: str | None = None
 
     # --- login protection ---
     max_failed_logins: int = 5
@@ -70,6 +72,17 @@ class Settings(BaseSettings):
     callback_max_retries: int = 3
     callback_worker_interval_seconds: float = 2
     allow_http_callbacks: bool = False
+    # One CRM serves every PSP, so its callback endpoint is set here and not per PSP.
+    crm_callback_url: str | None = None
+    crm_callback_username: str | None = None  # HTTP Basic auth for the callback
+    crm_callback_password: str | None = None
+
+    @model_validator(mode="after")
+    def check_crm_callback_url(self):
+        url = self.crm_callback_url
+        if url and not url.startswith("https://") and not (self.allow_http_callbacks and url.startswith("http://")):
+            raise ValueError("CRM_CALLBACK_URL must use HTTPS")
+        return self
 
     # --- screenshot storage (S3) ---
     s3_bucket: str | None = None  # private bucket; uploads are refused while unset

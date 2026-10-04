@@ -1,5 +1,6 @@
 """Deposit module (guide Sections 5 and 8)."""
 
+import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Form, Request, Response, status
@@ -28,16 +29,17 @@ def submit_deposit(
         psp,
         {
             "amount": body.amount,
-            "currency": body.currency,
             "bank_account_id": body.bank_account_id,
             "customer_email": body.customer_email,
         },
-        body.timestamp,
+        None,
         body.signature,
+        use_timestamp=False,
     )
-    ensure_psp_can_accept(psp, body.currency, body.bank_account_id)
+    ensure_psp_can_accept(psp, body.bank_account_id)
 
-    data = body.model_dump(exclude={"timestamp", "signature", "screenshot"})
+    data = body.model_dump(exclude={"signature", "screenshot"})
+    data["idempotency_key"] = data["idempotency_key"] or uuid.uuid4().hex
     tx, created = create_transaction(db, Deposit, psp, data, body.screenshot)
     if created:
         audit(db, "deposit.submitted", actor_type="psp", actor_id=psp.psp_code, target=tx.public_id, request=request)

@@ -15,7 +15,7 @@ from app.models import PortalUser, UserRole
 from app.routers import auth, deposits, meta, psps, withdrawals
 from app.security import hash_password
 from app.services.callback import CallbackWorker
-from app.services.keys import portal_private_key
+from app.services.keys import crm_public_key_pem, portal_private_key
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("psp_portal")
@@ -49,6 +49,8 @@ def check_production_settings() -> None:
         problems.append("ENFORCE_HTTPS must be true")
     if s.allow_http_callbacks:
         problems.append("ALLOW_HTTP_CALLBACKS must be false")
+    if not (s.crm_callback_url and s.crm_callback_username and s.crm_callback_password):
+        problems.append("CRM_CALLBACK_URL, CRM_CALLBACK_USERNAME and CRM_CALLBACK_PASSWORD must be set")
     if not s.require_signature:
         problems.append("REQUIRE_SIGNATURE must be true")
     if len(s.jwt_secret) < 32:
@@ -65,6 +67,7 @@ async def lifespan(_: FastAPI):
         run_migrations()  # alembic upgrade head
     bootstrap_admin()
     portal_private_key()  # load or generate the signing key at startup
+    crm_public_key_pem()  # fail now, not on the first request, if the CRM key file is bad
     worker = CallbackWorker()
     worker.start()
     yield

@@ -84,7 +84,7 @@ def build_review_router(
         psp = db.scalar(select(Psp).where(Psp.psp_code == body.psp_code))
         if psp is None:
             raise AppError(ErrorCode.PSP_NOT_FOUND, f"PSP {body.psp_code} not found")
-        ensure_psp_can_accept(psp, body.currency, getattr(body, account_field) if account_field else None)
+        ensure_psp_can_accept(psp, getattr(body, account_field) if account_field else None)
 
         data = body.model_dump(exclude={"psp_code", "screenshot"})
         tx, _ = create_transaction(db, model, psp, data, body.screenshot)

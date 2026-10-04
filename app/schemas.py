@@ -19,7 +19,7 @@ from pydantic import (
 from app.models import PspStatus, TxStatus, UserRole
 from app.services.storage import view_url
 
-Currency = Literal["INR", "USD", "EUR"]
+Currency = Literal["INR"]
 Amount = Annotated[Decimal, Field(gt=0, max_digits=18, decimal_places=2)]
 # Stored S3 keys leave the API as short-lived presigned links.
 ScreenshotLink = Annotated[str, AfterValidator(view_url)]
@@ -99,37 +99,17 @@ class UserOut(BaseModel):
 
 # ---------- PSP management ----------
 
-class ContactInfo(BaseModel):
-    email: EmailStr | None = None
-    phone: str | None = Field(default=None, max_length=30)
-    hours: str | None = Field(default=None, max_length=100, description="e.g. 09:00-23:59 (GMT+8) or 24 hours")
-
-
-class PspContacts(BaseModel):
-    """Checklist item 13 — contact & service hours."""
-
-    technical: ContactInfo | None = None
-    business: ContactInfo | None = None
-    customer_service: ContactInfo | None = None
-
-
 class PspBase(BaseModel):
     psp_name: str | None = Field(default=None, min_length=1, max_length=200)
-    callback_url: HttpUrl | None = None
-    callback_username: str | None = Field(default=None, min_length=1, max_length=100)
-    callback_password: str | None = Field(default=None, min_length=8, max_length=200)
-    bank_accounts: list[Annotated[str, Field(min_length=1, max_length=50)]] | None = None
-    allowed_currencies: list[Currency] | None = None
     ifsc_code: str | None = None
     account_number: str | None = Field(
         default=None, min_length=6, max_length=34, pattern=r"^[A-Za-z0-9]+$",
-        description="PSP's primary bank account number (digits/letters only, no spaces)",
+        description=(
+            "The PSP's one bank account number (digits/letters only, no spaces). Deposits (bank_account_id) "
+            "and withdrawals (source_account_id) must send this value."
+        ),
     )
     contact_email: EmailStr | None = None
-    contacts: PspContacts | None = None
-    client_public_key: str | None = Field(
-        default=None, description="CRM RSA public key (PEM, >= 2048 bits). Send \"\" to remove."
-    )
 
     @field_validator("ifsc_code")
     @classmethod
@@ -143,11 +123,13 @@ class PspBase(BaseModel):
 
 class PspCreate(PspBase):
     psp_name: str = Field(min_length=1, max_length=200)
-    callback_url: HttpUrl
-    callback_username: str = Field(min_length=1, max_length=100, description="HTTP Basic auth for callbacks")
-    callback_password: str = Field(min_length=8, max_length=200)
-    bank_accounts: list[Annotated[str, Field(min_length=1, max_length=50)]] = Field(min_length=1)
-    allowed_currencies: list[Currency] = Field(min_length=1)
+    account_number: str = Field(
+        min_length=6, max_length=34, pattern=r"^[A-Za-z0-9]+$",
+        description=(
+            "The PSP's one bank account number (digits/letters only, no spaces). Deposits (bank_account_id) "
+            "and withdrawals (source_account_id) must send this value."
+        ),
+    )
     login_email: EmailStr = Field(description="Portal login for this PSP; it reviews its own requests")
     login_password: str = Field(min_length=10, max_length=72)
 
@@ -164,15 +146,9 @@ class PspOut(BaseModel):
     psp_code: str
     psp_name: str
     status: PspStatus
-    callback_url: str
-    callback_username: str
-    bank_accounts: list[str]
-    allowed_currencies: list[str]
     ifsc_code: str | None
     account_number: str | None
     contact_email: str | None
-    contacts: dict
-    has_client_public_key: bool
     api_token_expires_at: datetime
     credentials_rotated_at: datetime | None
     prev_valid_until: datetime | None
@@ -239,35 +215,16 @@ class DepositFields(ScreenshotForm):
     customer_name: str = Field(min_length=1, max_length=200)
     customer_email: EmailStr
     amount: Amount
-    currency: Currency
-    screenshot_url: str | None = Field(
-        default=None, max_length=1000, description="Link to a screenshot hosted elsewhere, if no file is attached"
-    )
+    currency: Currency = "INR"
     utr_number: str | None = Field(default=None, max_length=100)
     comment: str | None = Field(default=None, max_length=2000)
-
-    @field_validator("screenshot_url")
-    @classmethod
-    def check_screenshot_url(cls, v: str | None) -> str | None:
-        if v is None:
-            return v
-        try:
-            return str(_http_url.validate_python(v))
-        except ValueError:
-            raise ValueError("screenshot_url must be an http(s) URL")
-
-    @model_validator(mode="after")
-    def screenshot_required(self):
-        if self.screenshot is None and self.screenshot_url is None:
-            raise ValueError("A deposit needs a screenshot: attach the file as `screenshot` or send screenshot_url")
-        return self
 
 
 class WithdrawalFields(ScreenshotForm):
     customer_name: str = Field(min_length=1, max_length=200)
     customer_email: EmailStr
     amount: Amount
-    currency: Currency
+    currency: Currency = "INR"
     source_account_id: str = Field(min_length=1, max_length=50)
     comment: str | None = Field(default=None, max_length=2000)
 
@@ -282,9 +239,15 @@ class WithdrawalFields(ScreenshotForm):
         return v
 
 
-class DepositCreate(DepositFields, SignedRequest):
+class DepositCreate(DepositFields):
+    """CRM deposit: always INR, the screenshot file travels with the request, signed without a timestamp."""
+
+    screenshot: UploadFile = Field(description="Screenshot file (PNG, JPEG, WEBP or PDF). Stored in S3.")
     bank_account_id: str = Field(min_length=1, max_length=50)
-    idempotency_key: str | None = Field(default=None, max_length=100)
+    idempotency_key: str | None = Field(
+        default=None, max_length=100, description="Generated by the portal when not sent"
+    )
+    signature: str | None = Field(default=None, description="MD5 signature, see README")
 
 
 class WithdrawalCreate(WithdrawalFields, SignedRequest):
@@ -345,6 +308,25 @@ class AdminDepositCreate(DepositFields):
     """Admin submits a deposit from the portal on behalf of a PSP (no CRM signature)."""
 
     psp_code: str = Field(description="PSP that will review this deposit")
+    screenshot_url: str | None = Field(
+        default=None, max_length=1000, description="Link to a screenshot hosted elsewhere, if no file is attached"
+    )
+
+    @field_validator("screenshot_url")
+    @classmethod
+    def check_screenshot_url(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        try:
+            return str(_http_url.validate_python(v))
+        except ValueError:
+            raise ValueError("screenshot_url must be an http(s) URL")
+
+    @model_validator(mode="after")
+    def screenshot_required(self):
+        if self.screenshot is None and self.screenshot_url is None:
+            raise ValueError("A deposit needs a screenshot: attach the file as `screenshot` or send screenshot_url")
+        return self
 
 
 class AdminWithdrawalCreate(WithdrawalFields):

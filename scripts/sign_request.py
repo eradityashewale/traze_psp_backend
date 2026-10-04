@@ -25,7 +25,7 @@ from cryptography.hazmat.primitives.asymmetric import padding  # noqa: E402
 from app.security import compute_signature  # noqa: E402
 
 SIGNED_FIELDS = {
-    "deposit": ["amount", "currency", "bank_account_id", "customer_email"],
+    "deposit": ["amount", "bank_account_id", "customer_email"],  # no timestamp on deposits
     "withdrawal": ["amount", "currency", "customer_email", "dest_account_number", "source_account_id"],
 }
 
@@ -41,11 +41,13 @@ def main() -> None:
         sys.exit(__doc__)
     kind, path, salt = sys.argv[1:4]
     body = json.loads(Path(path).read_text(), parse_float=Decimal)
-    if ist:
-        body["timestamp"] = datetime.now(IST).isoformat(timespec="seconds")
-    else:
-        body["timestamp"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    fields = {k: body[k] for k in SIGNED_FIELDS[kind]} | {"timestamp": body["timestamp"]}
+    fields = {k: body[k] for k in SIGNED_FIELDS[kind]}
+    if kind != "deposit":
+        if ist:
+            body["timestamp"] = datetime.now(IST).isoformat(timespec="seconds")
+        else:
+            body["timestamp"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        fields["timestamp"] = body["timestamp"]
     body["signature"] = compute_signature(fields, salt)
     raw = json.dumps(body, default=lambda o: float(o) if isinstance(o, Decimal) else str(o))
     print(raw)

@@ -29,7 +29,6 @@ class ErrorCode(Enum):
     FORBIDDEN = ("E1009", 403, "You do not have permission for this action")
     ACCOUNT_LOCKED = ("E1011", 423, "Account temporarily locked after too many failed attempts")
     PSP_INACTIVE = ("E2001", 403, "PSP is inactive and cannot receive new requests")
-    CURRENCY_NOT_ALLOWED = ("E2002", 422, "Currency is not allowed for this PSP")
     BANK_ACCOUNT_NOT_ALLOWED = ("E2003", 422, "Bank account is not managed by this PSP")
     PSP_NOT_FOUND = ("E2004", 404, "PSP not found")
     PSP_ALREADY_EXISTS = ("E2005", 409, "PSP code already exists")

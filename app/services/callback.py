@@ -78,17 +78,17 @@ def _attempt(client: httpx.Client, tx: Transaction) -> None:
     tx.callback_attempts += 1
     error: str | None = None
 
-    if psp is None or not psp.callback_url:
-        error = "PSP has no callback URL configured"
+    if not settings.crm_callback_url:
+        error = "CRM_CALLBACK_URL is not configured"
     else:
         body = json.dumps(build_payload(tx), separators=(",", ":")).encode()
         headers = {"Content-Type": "application/json", "X-Signature": sign_with_portal_key(body)}
         try:
             resp = client.post(
-                psp.callback_url,
+                settings.crm_callback_url,
                 content=body,
                 headers=headers,
-                auth=(psp.callback_username, psp.callback_password),
+                auth=(settings.crm_callback_username or "", settings.crm_callback_password or ""),
             )
             if resp.status_code == 200:
                 tx.callback_sent = True

@@ -42,7 +42,7 @@ def submit_withdrawal(
         body.timestamp,
         body.signature,
     )
-    ensure_psp_can_accept(psp, body.currency, body.source_account_id)
+    ensure_psp_can_accept(psp, body.source_account_id)
 
     data = body.model_dump(exclude={"timestamp", "signature", "screenshot"})
     tx, created = create_transaction(db, Withdrawal, psp, data, body.screenshot)

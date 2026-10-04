@@ -109,13 +109,10 @@ def questionnaire(psp_code: str, db: DbSession, _: AdminUser):
     """The 'New PSP Checklist' filled in from this deployment's configuration and the PSP record."""
     s = get_settings()
     psp: Psp = _get_psp(db, psp_code)
-    contacts = psp.contacts or {}
     env_label = {"uat": "UAT", "production": "Production"}.get(s.environment, "Local")
 
-    def contact(key: str, fallback: str) -> str:
-        c = contacts.get(key) or {}
-        parts = [c.get("email"), c.get("phone"), c.get("hours")]
-        return "\n".join(p for p in parts if p) or fallback or "Not provided"
+    def contact(fallback: str) -> str:
+        return psp.contact_email or fallback or "Not provided"
 
     return {
         "psp_name": psp.psp_name,
@@ -131,7 +128,8 @@ def questionnaire(psp_code: str, db: DbSession, _: AdminUser):
             {"no": "3", "question": "How requests are authenticated?",
              "answer": "API Token (Authorization: Bearer) & API secret key (X-API-Secret)"},
             {"no": "4", "question": "HTTP Basic authorization for webhooks",
-             "answer": f"Yes, callbacks to {psp.callback_url} use HTTP Basic auth (user '{psp.callback_username}')"},
+             "answer": f"Yes, callbacks to {s.crm_callback_url or 'the CRM (URL not configured)'} use HTTP Basic auth "
+                       f"(user '{s.crm_callback_username or 'not configured'}')"},
             {"no": "5", "question": "Could API token be changed periodically?",
              "answer": f"Yes, every {s.api_token_validity_days} days (quarterly); old token valid for "
                        f"{s.rotation_grace_hours}h after rotation. Current token expires "
@@ -140,7 +138,7 @@ def questionnaire(psp_code: str, db: DbSession, _: AdminUser):
              "answer": "md5 signature of sorted critical fields + timestamp + shared salt, on requests and callbacks"},
             {"no": "7", "question": "Public-server certificate / key for authentication?",
              "answer": "Public key & private key: CRM signs requests (RSA-SHA256, X-Signature)"
-                       + (" [CRM key registered]" if psp.client_public_key else " [CRM key NOT registered yet]")
+                       + (" [CRM key registered]" if s.crm_public_key_path else " [CRM key NOT registered yet]")
                        + "; portal signs callbacks, public key at /api/v1/meta/public-key"},
             {"no": "8", "question": "Key length for encryption (HTTPS/SSL)?",
              "answer": f"RSA {s.min_rsa_key_bits}-bit minimum (TLS certificate and signing keys)"},
@@ -149,9 +147,8 @@ def questionnaire(psp_code: str, db: DbSession, _: AdminUser):
             {"no": "10", "question": "PCI compliance level", "answer": s.pci_dss_level},
             {"no": "11", "question": "DR site / how to switch?", "answer": s.dr_description},
             {"no": "12", "question": "How can we monitor availability of PSP?", "answer": s.monitoring_channel},
-            {"no": "13.1", "question": "Technical Support", "answer": contact("technical", s.support_technical)},
-            {"no": "13.2", "question": "Business", "answer": contact("business", s.support_business)},
-            {"no": "13.3", "question": "Customer Service",
-             "answer": contact("customer_service", s.support_customer_service)},
+            {"no": "13.1", "question": "Technical Support", "answer": contact(s.support_technical)},
+            {"no": "13.2", "question": "Business", "answer": contact(s.support_business)},
+            {"no": "13.3", "question": "Customer Service", "answer": contact(s.support_customer_service)},
         ],
     }

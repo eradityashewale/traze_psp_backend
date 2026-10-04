@@ -4,10 +4,10 @@ Usage:
     python scripts/mock_crm.py                     # listens on http://127.0.0.1:9100/cb
     python scripts/mock_crm.py 9200 crm secret123  # custom port, username, password
 
-Use these values when creating the PSP:
-    "callback_url":      "http://127.0.0.1:9100/cb"
-    "callback_username": "crm"
-    "callback_password": "cb-pass-123"
+Put these values in .env (with ALLOW_HTTP_CALLBACKS=true) and restart the app:
+    CRM_CALLBACK_URL=http://127.0.0.1:9100/cb
+    CRM_CALLBACK_USERNAME=crm
+    CRM_CALLBACK_PASSWORD=cb-pass-123
 
 Every callback is printed, along with whether the Basic auth and the portal's RSA
 signature were valid. It answers 200 when both are fine, so the portal marks the

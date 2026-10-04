@@ -16,15 +16,10 @@ from app.services.storage import upload_screenshot
 Transaction = Deposit | Withdrawal
 
 
-def ensure_psp_can_accept(psp: Psp, currency: str, bank_account_id: str | None) -> None:
+def ensure_psp_can_accept(psp: Psp, bank_account_id: str | None) -> None:
     if psp.status != PspStatus.active:
         raise AppError(ErrorCode.PSP_INACTIVE)
-    if currency not in psp.allowed_currencies:
-        raise AppError(
-            ErrorCode.CURRENCY_NOT_ALLOWED,
-            f"Currency {currency} is not allowed for this PSP (allowed: {', '.join(psp.allowed_currencies)})",
-        )
-    if bank_account_id is not None and bank_account_id not in psp.bank_accounts:
+    if bank_account_id is not None and bank_account_id != psp.account_number:
         raise AppError(ErrorCode.BANK_ACCOUNT_NOT_ALLOWED, f"Bank account {bank_account_id} is not managed by this PSP")
 
 

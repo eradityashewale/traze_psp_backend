@@ -8,11 +8,21 @@ from app.security import compute_signature, constant_time_equals
 
 
 def verify_request_signature(
-    psp: Psp, fields: dict[str, Any], timestamp: str | None, signature: str | None
+    psp: Psp, fields: dict[str, Any], timestamp: str | None, signature: str | None, *, use_timestamp: bool = True
 ) -> None:
-    """Reject the request unless `signature` matches md5(sorted fields + timestamp + salt)."""
+    """Reject the request unless `signature` matches md5(sorted fields + timestamp + salt).
+
+    With use_timestamp=False the request carries no timestamp and only the fields are signed.
+    """
     settings = get_settings()
     if not settings.require_signature:
+        return
+    if not use_timestamp:
+        if not signature:
+            raise AppError(ErrorCode.SIGNATURE_MISSING, "signature is required")
+        expected = compute_signature(fields, psp.signature_salt)
+        if not constant_time_equals(expected, signature.lower()):
+            raise AppError(ErrorCode.SIGNATURE_INVALID)
         return
     if not timestamp or not signature:
         raise AppError(ErrorCode.SIGNATURE_MISSING)

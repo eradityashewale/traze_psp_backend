@@ -13,7 +13,6 @@ from app.models import OPEN_STATUSES, Deposit, Psp, UserRole, Withdrawal
 from app.schemas import PspCreate, PspCreated, PspCredentials, PspList, PspOut, PspUpdate, RotateRequest, UserOut
 from app.security import generate_psp_code, generate_psp_credentials, sha256_hex
 from app.services.audit import audit
-from app.services.keys import load_public_key
 from app.services.users import new_portal_user
 
 router = APIRouter(prefix="/api/v1/psps", tags=["PSP Management"])
@@ -28,19 +27,6 @@ def _get_psp(db: Session, psp_code: str) -> Psp:
     if psp is None:
         raise AppError(ErrorCode.PSP_NOT_FOUND, f"PSP {psp_code} not found")
     return psp
-
-
-def _check_callback_url(url: str) -> None:
-    if not url.startswith("https://") and not get_settings().allow_http_callbacks:
-        raise AppError(ErrorCode.PSP_CONFIG_INVALID, "callback_url must use HTTPS")
-
-
-def _check_public_key(pem: str) -> str:
-    try:
-        load_public_key(pem)
-    except ValueError as exc:
-        raise AppError(ErrorCode.PSP_CONFIG_INVALID, f"client_public_key: {exc}")
-    return pem.strip()
 
 
 def _issue_credentials(psp: Psp, *, rotate_salt: bool = True) -> dict:
@@ -73,17 +59,7 @@ def create_psp(body: PspCreate, db: DbSession, admin: AdminUser, request: Reques
     The PSP logs in with that login to approve or reject its own deposits and withdrawals.
     `psp_code` is generated here and returned in the response; it is not accepted in the body.
     """
-    callback_url = str(body.callback_url)
-    _check_callback_url(callback_url)
-
-    data = body.model_dump(exclude={"callback_url", "contacts", "client_public_key", "login_email", "login_password"})
-    psp = Psp(
-        **data,
-        psp_code=_new_psp_code(db),
-        callback_url=callback_url,
-        contacts=body.contacts.model_dump(exclude_none=True) if body.contacts else {},
-        client_public_key=_check_public_key(body.client_public_key) if body.client_public_key else None,
-    )
+    psp = Psp(**body.model_dump(exclude={"login_email", "login_password"}), psp_code=_new_psp_code(db))
     creds = _issue_credentials(psp)
     db.add(psp)
     login = new_portal_user(
@@ -116,24 +92,14 @@ def get_psp(psp_code: str, db: DbSession, _: AdminUser):
 def update_psp(psp_code: str, body: PspUpdate, db: DbSession, admin: AdminUser, request: Request):
     psp = _get_psp(db, psp_code)
     changes = body.model_dump(exclude_unset=True)
-    for field in ("psp_name", "bank_accounts", "allowed_currencies", "callback_url", "status",
-                  "callback_username", "callback_password"):
+    for field in ("psp_name", "account_number", "status"):
         if field in changes and changes[field] is None:
             raise AppError(ErrorCode.PSP_CONFIG_INVALID, f"{field} cannot be null")
-    if "callback_url" in changes:
-        changes["callback_url"] = str(changes["callback_url"])
-        _check_callback_url(changes["callback_url"])
-    if "contacts" in changes:
-        changes["contacts"] = body.contacts.model_dump(exclude_none=True) if body.contacts else {}
-    if "client_public_key" in changes:
-        pem = changes["client_public_key"]
-        changes["client_public_key"] = _check_public_key(pem) if pem else None
 
     for field, value in changes.items():
         setattr(psp, field, value)
-    logged = {k: ("***" if k in ("callback_password", "client_public_key") else v) for k, v in changes.items()}
     audit(db, "psp.updated", actor_type="user", actor_id=admin.id, target=psp.psp_code,
-          details={k: (v.value if hasattr(v, "value") else v) for k, v in logged.items()}, request=request)
+          details={k: (v.value if hasattr(v, "value") else v) for k, v in changes.items()}, request=request)
     db.refresh(psp)
     return psp
 

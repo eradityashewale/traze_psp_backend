@@ -11,7 +11,7 @@ from app.database import get_db
 from app.errors import AppError, ErrorCode
 from app.models import PortalUser, Psp, PspStatus, UserRole
 from app.security import constant_time_equals, decode_access_token, sha256_hex
-from app.services.keys import verify_signature
+from app.services.keys import crm_public_key_pem, verify_signature
 
 DbSession = Annotated[Session, Depends(get_db)]
 
@@ -112,13 +112,14 @@ CallingPsp = Annotated[Psp, Depends(get_calling_psp)]
 
 
 async def get_verified_psp(request: Request, psp: CallingPsp) -> Psp:
-    """CallingPsp plus the RSA body signature, when the PSP has registered a public key."""
-    if psp.client_public_key:
+    """CallingPsp plus the RSA body signature, when the CRM's public key is configured."""
+    public_key = crm_public_key_pem()
+    if public_key:
         signature = request.headers.get("X-Signature")
         body = getattr(request.state, "raw_body", None)
         if body is None:
             body = await request.body()
-        if not signature or not verify_signature(psp.client_public_key, body, signature):
+        if not signature or not verify_signature(public_key, body, signature):
             raise AppError(ErrorCode.RSA_SIGNATURE_INVALID)
     return psp
 

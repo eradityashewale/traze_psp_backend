@@ -1,6 +1,6 @@
 """RSA public/private key layer (checklist items 7 and 8).
 
-* Inbound: a CRM that has registered its public key must sign the raw request body with
+* Inbound: when the CRM's public key is configured (CRM_PUBLIC_KEY_PATH), it must sign the raw request body with
   RSA-SHA256 (PKCS#1 v1.5) and send it base64-encoded in the X-Signature header.
 * Outbound: every callback body is signed with the portal's private key, also in X-Signature.
   The CRM verifies it with the key from GET /api/v1/meta/public-key.
@@ -41,6 +41,20 @@ def verify_signature(public_key_pem: str, body: bytes, signature_b64: str) -> bo
         return True
     except (InvalidSignature, ValueError):
         return False
+
+
+@lru_cache
+def crm_public_key_pem() -> str | None:
+    """The CRM's public key from CRM_PUBLIC_KEY_PATH, or None when request signing is not set up."""
+    path = get_settings().crm_public_key_path
+    if not path:
+        return None
+    try:
+        pem = Path(path).read_text()
+        load_public_key(pem)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"CRM_PUBLIC_KEY_PATH {path}: {exc}") from exc
+    return pem
 
 
 @lru_cache
