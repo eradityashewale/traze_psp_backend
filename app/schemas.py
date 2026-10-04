@@ -3,12 +3,27 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Generic, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, HttpUrl, field_validator, model_validator
+from fastapi import UploadFile
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    HttpUrl,
+    TypeAdapter,
+    field_validator,
+    model_validator,
+)
 
 from app.models import PspStatus, TxStatus, UserRole
+from app.services.storage import view_url
 
 Currency = Literal["INR", "USD", "EUR"]
 Amount = Annotated[Decimal, Field(gt=0, max_digits=18, decimal_places=2)]
+# Stored S3 keys leave the API as short-lived presigned links.
+ScreenshotLink = Annotated[str, AfterValidator(view_url)]
+_http_url = TypeAdapter(HttpUrl)
 
 IFSC_RE = re.compile(r"^[A-Z]{4}0[A-Z0-9]{6}$")
 SWIFT_RE = re.compile(r"^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$")
@@ -204,17 +219,51 @@ class SignedRequest(BaseModel):
     signature: str | None = Field(default=None, description="MD5 signature, see README")
 
 
-class DepositFields(BaseModel):
+class ScreenshotForm(BaseModel):
+    """Deposits and withdrawals are submitted as multipart/form-data so the screenshot travels with them."""
+
+    screenshot: UploadFile | None = Field(
+        default=None, description="Screenshot file (PNG, JPEG, WEBP or PDF). Stored in S3."
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_empty_fields(cls, data):
+        # Forms send optional fields that were left blank as "".
+        if isinstance(data, dict):
+            return {k: v for k, v in data.items() if v != ""}
+        return data
+
+
+class DepositFields(ScreenshotForm):
     customer_name: str = Field(min_length=1, max_length=200)
     customer_email: EmailStr
     amount: Amount
     currency: Currency
-    screenshot_url: HttpUrl
+    screenshot_url: str | None = Field(
+        default=None, max_length=1000, description="Link to a screenshot hosted elsewhere, if no file is attached"
+    )
     utr_number: str | None = Field(default=None, max_length=100)
     comment: str | None = Field(default=None, max_length=2000)
 
+    @field_validator("screenshot_url")
+    @classmethod
+    def check_screenshot_url(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        try:
+            return str(_http_url.validate_python(v))
+        except ValueError:
+            raise ValueError("screenshot_url must be an http(s) URL")
 
-class WithdrawalFields(BaseModel):
+    @model_validator(mode="after")
+    def screenshot_required(self):
+        if self.screenshot is None and self.screenshot_url is None:
+            raise ValueError("A deposit needs a screenshot: attach the file as `screenshot` or send screenshot_url")
+        return self
+
+
+class WithdrawalFields(ScreenshotForm):
     customer_name: str = Field(min_length=1, max_length=200)
     customer_email: EmailStr
     amount: Amount
@@ -332,11 +381,12 @@ class TransactionOutBase(BaseModel):
 
 class DepositOut(TransactionOutBase):
     bank_account_id: str | None  # empty for deposits submitted by an admin
-    screenshot_url: str
+    screenshot_url: ScreenshotLink
     utr_number: str | None
 
 
 class WithdrawalOut(TransactionOutBase):
+    screenshot_url: ScreenshotLink | None  # only when one was attached at submission
     # destination details may be empty on withdrawals submitted by an admin
     dest_bank_name: str | None
     dest_account_number: str | None

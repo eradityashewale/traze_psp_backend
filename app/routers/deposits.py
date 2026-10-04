@@ -1,6 +1,8 @@
 """Deposit module (guide Sections 5 and 8)."""
 
-from fastapi import APIRouter, Request, Response, status
+from typing import Annotated
+
+from fastapi import APIRouter, Form, Request, Response, status
 
 from app.deps import CallingPsp, DbSession, VerifiedPsp
 from app.models import Deposit
@@ -15,7 +17,13 @@ review_router = build_review_router(Deposit, DepositOut, AdminDepositCreate, "de
 
 
 @router.post("", response_model=DepositSubmitted, status_code=status.HTTP_201_CREATED)
-def submit_deposit(body: DepositCreate, db: DbSession, psp: VerifiedPsp, response: Response, request: Request):
+def submit_deposit(
+    body: Annotated[DepositCreate, Form(media_type="multipart/form-data")],
+    db: DbSession,
+    psp: VerifiedPsp,
+    response: Response,
+    request: Request,
+):
     verify_request_signature(
         psp,
         {
@@ -29,9 +37,8 @@ def submit_deposit(body: DepositCreate, db: DbSession, psp: VerifiedPsp, respons
     )
     ensure_psp_can_accept(psp, body.currency, body.bank_account_id)
 
-    data = body.model_dump(exclude={"timestamp", "signature", "screenshot_url"})
-    data["screenshot_url"] = str(body.screenshot_url)
-    tx, created = create_transaction(db, Deposit, psp, data)
+    data = body.model_dump(exclude={"timestamp", "signature", "screenshot"})
+    tx, created = create_transaction(db, Deposit, psp, data, body.screenshot)
     if created:
         audit(db, "deposit.submitted", actor_type="psp", actor_id=psp.psp_code, target=tx.public_id, request=request)
     else:

@@ -71,6 +71,15 @@ class Settings(BaseSettings):
     callback_worker_interval_seconds: float = 2
     allow_http_callbacks: bool = False
 
+    # --- screenshot storage (S3) ---
+    s3_bucket: str | None = None  # private bucket; uploads are refused while unset
+    aws_region: str = "ap-south-1"
+    # Local runs only. On EC2 leave both empty and attach an IAM role to the instance.
+    aws_access_key_id: str | None = None
+    aws_secret_access_key: str | None = None
+    s3_url_expires_seconds: int = 900  # lifetime of the view links in API responses
+    screenshot_max_mb: int = 5
+
     # --- informational answers for the questionnaire (checklist 10-13) ---
     pci_dss_level: str = "To be confirmed with the PSP team"
     dr_description: str = "Secondary DR site; failover is automatic on the PSP side, API URLs do not change"

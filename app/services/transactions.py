@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 from typing import Any
 
+from fastapi import UploadFile
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.errors import AppError, ErrorCode
 from app.models import FINAL_STATUSES, Deposit, PortalUser, Psp, PspStatus, TxStatus, Withdrawal
 from app.services.callback import schedule_callback
+from app.services.storage import upload_screenshot
 
 Transaction = Deposit | Withdrawal
 
@@ -27,12 +29,13 @@ def ensure_psp_can_accept(psp: Psp, currency: str, bank_account_id: str | None) 
 
 
 def create_transaction(
-    db: Session, model: type[Transaction], psp: Psp, data: dict[str, Any]
+    db: Session, model: type[Transaction], psp: Psp, data: dict[str, Any], screenshot: UploadFile | None = None
 ) -> tuple[Transaction, bool]:
     """Insert a new pending transaction. Returns (tx, created).
 
     If the idempotency_key was already used by this PSP, the existing record is
     returned with created=False instead of inserting a duplicate.
+    An attached screenshot is stored in S3 and its key saved as screenshot_url.
     """
     key = data.get("idempotency_key")
     if key:
@@ -40,6 +43,8 @@ def create_transaction(
         if existing:
             return existing, False
 
+    if screenshot is not None:
+        data = {**data, "screenshot_url": upload_screenshot(screenshot)}
     tx = model(**data, psp_id=psp.id, status=TxStatus.pending)
     db.add(tx)
     try:

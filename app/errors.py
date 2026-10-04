@@ -38,7 +38,8 @@ class ErrorCode(Enum):
     TX_NOT_FOUND = ("E3001", 404, "Transaction not found")
     TX_ALREADY_FINAL = ("E3002", 409, "Transaction is already approved or rejected")
     TX_INVALID_TRANSITION = ("E3003", 409, "Status change not allowed")
-    USER_ALREADY_EXISTS = ("E4001", 409, "A user with this email already exists")
+    FILE_INVALID = ("E3004", 422, "Uploaded file is not an accepted screenshot")
+    USER_ALREADY_EXISTS =("E4001", 409, "A user with this email already exists")
     USER_NOT_FOUND = ("E4002", 404, "User not found")
     USER_SELF_CHANGE = ("E4003", 400, "You cannot deactivate or demote yourself")
     PASSWORD_INCORRECT = ("E4004", 400, "Current password is incorrect")
@@ -46,6 +47,7 @@ class ErrorCode(Enum):
     METHOD_NOT_ALLOWED = ("E4050", 405, "Method not allowed")
     INTERNAL_ERROR = ("E5000", 500, "Internal server error")
     SERVICE_UNAVAILABLE = ("E5001", 503, "Service temporarily unavailable")
+    STORAGE_UNAVAILABLE = ("E5002", 503, "Screenshot storage is unavailable")
 
     @property
     def code(self) -> str:

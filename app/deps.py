@@ -115,7 +115,9 @@ async def get_verified_psp(request: Request, psp: CallingPsp) -> Psp:
     """CallingPsp plus the RSA body signature, when the PSP has registered a public key."""
     if psp.client_public_key:
         signature = request.headers.get("X-Signature")
-        body = await request.body()
+        body = getattr(request.state, "raw_body", None)
+        if body is None:
+            body = await request.body()
         if not signature or not verify_signature(psp.client_public_key, body, signature):
             raise AppError(ErrorCode.RSA_SIGNATURE_INVALID)
     return psp

@@ -93,6 +93,9 @@ async def require_https(request: Request, call_next):
                 {"success": False, "error_code": ErrorCode.HTTPS_REQUIRED.code, "message": "HTTPS is required"},
                 status_code=403,
             )
+    # A multipart body can be read only once; keep the raw bytes for the RSA signature check.
+    if request.method == "POST" and request.headers.get("content-type", "").startswith("multipart/form-data"):
+        request.state.raw_body = await request.body()
     response = await call_next(request)
     if settings.enforce_https:
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"

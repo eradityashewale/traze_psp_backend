@@ -7,8 +7,9 @@ Used by portal logins (JWT), not by the CRM:
 """
 
 from datetime import date, datetime, time, timedelta, timezone
+from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, Form, Query, Request, status
 from sqlalchemy import func, or_, select
 
 from app.deps import AdminUser, CurrentUser, DbSession, PspUser
@@ -73,17 +74,20 @@ def build_review_router(
         return {"items": items, "total": total, "limit": limit, "offset": offset}
 
     @router.post("", response_model=out_schema, status_code=status.HTTP_201_CREATED)
-    def create_item(body: create_schema, db: DbSession, user: AdminUser, request: Request):
+    def create_item(
+        body: Annotated[create_schema, Form(media_type="multipart/form-data")],
+        db: DbSession,
+        user: AdminUser,
+        request: Request,
+    ):
         """Admin: submit a request from the portal for a PSP. That PSP's login then reviews it as usual."""
         psp = db.scalar(select(Psp).where(Psp.psp_code == body.psp_code))
         if psp is None:
             raise AppError(ErrorCode.PSP_NOT_FOUND, f"PSP {body.psp_code} not found")
         ensure_psp_can_accept(psp, body.currency, getattr(body, account_field) if account_field else None)
 
-        data = body.model_dump(exclude={"psp_code"})
-        if "screenshot_url" in data:
-            data["screenshot_url"] = str(data["screenshot_url"])
-        tx, _ = create_transaction(db, model, psp, data)
+        data = body.model_dump(exclude={"psp_code", "screenshot"})
+        tx, _ = create_transaction(db, model, psp, data, body.screenshot)
         audit(db, f"{kind}.submitted", actor_type="user", actor_id=user.id, target=tx.public_id,
               details={"psp_code": psp.psp_code, "source": "admin_portal"}, request=request)
         return tx

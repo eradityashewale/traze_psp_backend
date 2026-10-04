@@ -161,7 +161,7 @@ class Deposit(TransactionMixin, Base):
     PREFIX = "DEP"
 
     bank_account_id: Mapped[str | None] = mapped_column(String(50))  # not set on admin-submitted deposits
-    screenshot_url: Mapped[str] = mapped_column(String(1000))
+    screenshot_url: Mapped[str] = mapped_column(String(1000))  # S3 key, or an external URL from the CRM
     utr_number: Mapped[str | None] = mapped_column(String(100), index=True)
 
     psp: Mapped[Psp | None] = relationship(lazy="selectin")
@@ -179,6 +179,7 @@ class Withdrawal(TransactionMixin, Base):
     dest_ifsc: Mapped[str | None] = mapped_column(String(11))
     dest_account_name: Mapped[str | None] = mapped_column(String(200))
     source_account_id: Mapped[str] = mapped_column(String(50))
+    screenshot_url: Mapped[str | None] = mapped_column(String(1000))  # S3 key, when one was attached
 
     psp: Mapped[Psp | None] = relationship(lazy="selectin")
     reviewer: Mapped[PortalUser | None] = relationship(lazy="selectin")
