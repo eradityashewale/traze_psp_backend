@@ -39,7 +39,8 @@ def create_transaction(
             return existing, False
 
     if screenshot is not None:
-        data = {**data, "screenshot_url": upload_screenshot(screenshot)}
+        folder = "deposit" if model is Deposit else "withdrawal"
+        data = {**data, "screenshot_url": upload_screenshot(screenshot, folder)}
     tx = model(**data, psp_id=psp.id, status=TxStatus.pending)
     db.add(tx)
     try:

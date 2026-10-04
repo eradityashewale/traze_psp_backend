@@ -157,7 +157,7 @@ curl -X POST https://<host>/api/v1/deposits \
   -F screenshot=@receipt.png
 ```
 
-In portal responses `screenshot_url` is a presigned link valid for `S3_URL_EXPIRES_SECONDS` (900); fetch the record again for a fresh one. On EC2, give the instance an IAM role with `s3:PutObject` and `s3:GetObject` on `arn:aws:s3:::<bucket>/screenshots/*` and leave `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` empty. Keep **Block Public Access** on for the bucket.
+Files are stored under `screenshots/deposit/` and `screenshots/withdrawal/` in the bucket. In portal responses `screenshot_url` is a presigned link valid for `S3_URL_EXPIRES_SECONDS` (900); fetch the record again for a fresh one. On EC2, give the instance an IAM role with `s3:PutObject` and `s3:GetObject` on `arn:aws:s3:::<bucket>/screenshots/*` and leave `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` empty. Keep **Block Public Access** on for the bucket.
 
 ### Meta & monitoring
 | Method | Path | Auth |

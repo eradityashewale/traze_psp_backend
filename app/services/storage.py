@@ -21,7 +21,8 @@ from app.errors import AppError, ErrorCode
 log = logging.getLogger(__name__)
 
 KEY_PREFIX = "screenshots/"
-KEY_RE = re.compile(r"^screenshots/[0-9a-f]{32}\.(png|jpg|webp|pdf)$")
+# screenshots/deposit/<id>.<ext> or screenshots/withdrawal/<id>.<ext>; older files sit directly under screenshots/.
+KEY_RE = re.compile(r"^screenshots/((deposit|withdrawal)/)?[0-9a-f]{32}\.(png|jpg|webp|pdf)$")
 
 
 def _sniff(data: bytes) -> tuple[str, str] | None:
@@ -59,8 +60,8 @@ def _bucket() -> str:
     return bucket
 
 
-def upload_screenshot(file: UploadFile) -> str:
-    """Validate and store an uploaded screenshot. Returns the S3 object key."""
+def upload_screenshot(file: UploadFile, folder: str) -> str:
+    """Validate and store an uploaded screenshot in its folder (deposit / withdrawal). Returns the S3 object key."""
     bucket = _bucket()
     max_bytes = get_settings().screenshot_max_mb * 1024 * 1024
     data = file.file.read(max_bytes + 1)
@@ -71,7 +72,7 @@ def upload_screenshot(file: UploadFile) -> str:
         raise AppError(ErrorCode.FILE_INVALID, "Screenshot must be a PNG, JPEG, WEBP or PDF file")
 
     ext, content_type = kind
-    key = f"{KEY_PREFIX}{uuid.uuid4().hex}.{ext}"
+    key = f"{KEY_PREFIX}{folder}/{uuid.uuid4().hex}.{ext}"
     try:
         _client().put_object(
             Bucket=bucket, Key=key, Body=data, ContentType=content_type, ServerSideEncryption="AES256"
