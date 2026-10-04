@@ -9,7 +9,7 @@ Small backend for the PSP Portal. The CRM submits deposits and withdrawals, the 
 | # | Checklist question | How this backend answers it |
 |---|---|---|
 | 1.1 | Documentation | This README + Swagger at `/docs` + `/openapi.json` |
-| 1.2 / 1.3 | UAT / Production credentials | `ENVIRONMENT=uat\|production`, `PUBLIC_API_BASE_URL`, `ADMIN_PORTAL_URL`. Portal logins are created per user by an admin. |
+| 1.2 / 1.3 | UAT / Production credentials | `ENVIRONMENT=uat\|production`, `PUBLIC_API_BASE_URL`. Portal logins are created per user by an admin. |
 | 2 | HTTPS/SSL | `ENFORCE_HTTPS=true` rejects plain HTTP with `E1008` and sends HSTS. Callback URLs must be `https://`. |
 | 3 | Request authentication | `Authorization: Bearer <API_TOKEN>` + `X-API-Secret` |
 | 4 | HTTP Basic auth for webhooks | `CRM_CALLBACK_USERNAME` / `CRM_CALLBACK_PASSWORD` are sent on every callback and are **required** in UAT and production |
@@ -18,12 +18,10 @@ Small backend for the PSP Portal. The CRM submits deposits and withdrawals, the 
 | 7 | Public/private key | CRM signs request bodies with RSA (`X-Signature`). The portal signs callbacks with its own key (`GET /api/v1/meta/public-key`). |
 | 8 | Key length | RSA keys under `MIN_RSA_KEY_BITS` (2048) are rejected. TLS cert on the proxy: 2048+ bits. |
 | 9 | MFA | **Not implemented** (removed by decision). Portal login is password-only, with bcrypt hashing and a lockout after 5 failed attempts. |
-| 10 | PCI compliance | Audit trail (`/api/v1/audit-logs`), hashed credentials, no card data stored. The **level itself** is a business answer (`PCI_DSS_LEVEL`). |
+| 10 | PCI compliance | Audit trail (`/api/v1/audit-logs`), hashed credentials, no card data stored. The **level itself** is a business answer. |
 | 11 | DR site | Stateless app plus a DB-backed callback queue: nothing is lost on restart or failover, and several instances can run safely. DR infrastructure itself is ops. |
 | 12 | Availability monitoring | `GET /health`, `GET /health/ready` (DB + callback backlog), stable error codes (`GET /api/v1/meta/error-codes`) |
 | 13 | Contacts & service hours | One `contact_email` on each PSP |
-
-`GET /api/v1/psps/{psp_code}/questionnaire` returns the whole checklist filled in for a PSP.
 
 ## Run locally
 
@@ -85,7 +83,7 @@ A database created before migrations existed is adopted automatically on startup
 
 | Role | Who | Can do |
 |---|---|---|
-| `admin` | You (the portal operator) | Add, edit and delete PSPs, manage logins, view **all** deposits and withdrawals, submit a deposit or withdrawal for any PSP from the portal, audit logs. Does **not** approve or reject. |
+| `admin` | You (the portal operator) | Add, edit and delete PSPs, manage logins, view **all** deposits and withdrawals, submit a deposit or withdrawal for any PSP from the portal, approve or reject any PSP's requests, audit logs. |
 | `psp` | Each PSP | Log in, see **only its own** deposits and withdrawals, approve or reject them. |
 
 Creating a PSP also creates its portal login (`login_email`, `login_password`). A PSP can have more logins via `POST /api/v1/users`. When a PSP is deactivated its logins stop working; when it's deleted its logins are removed.
@@ -111,7 +109,6 @@ Creating a PSP also creates its portal login (`login_email`, `login_password`). 
 | PUT | `/api/v1/psps/{psp_code}` | partial update: status, `ifsc_code`, `account_number`, `contact_email` |
 | POST | `/api/v1/psps/{psp_code}/rotate-credentials` | `{grace_hours?, rotate_salt?}` |
 | DELETE | `/api/v1/psps/{psp_code}` | refused while requests are pending or processing. Removes the PSP's logins; transaction history is kept. |
-| GET | `/api/v1/psps/{psp_code}/questionnaire` | filled New PSP Checklist |
 
 ### CRM API
 Headers: `Authorization: Bearer <API_TOKEN>`, `X-API-Secret: <API_SECRET>`, plus `X-Signature` on POSTs if `CRM_PUBLIC_KEY_PATH` is set.
@@ -125,19 +122,19 @@ Headers: `Authorization: Bearer <API_TOKEN>`, `X-API-Secret: <API_SECRET>`, plus
 
 A repeated `idempotency_key` returns the existing record with `200`; a new one returns `201`. On a deposit the key is optional: the portal generates one when it is not sent.
 
-`INR` is the only currency. `currency` defaults to `INR` when it is not sent, and any other value is rejected with `E1000`. A PSP has no currency setting. A CRM deposit has no `timestamp`.
+`INR` is the only currency. A deposit has no `currency` field (CRM API and portal) and is always stored as `INR`. On a withdrawal `currency` defaults to `INR` when it is not sent, and any other value is rejected with `E1000`. A PSP has no currency setting. A CRM deposit has no `timestamp`.
 
 ### Portal review (JWT)
-A PSP login only ever sees and acts on its own PSP's requests. An admin sees all of them and can submit new ones, but can't decide. Paths are the same for `deposits` and `withdrawals`:
+A PSP login only ever sees and acts on its own PSP's requests. An admin sees all of them, can submit new ones, and can approve or reject any of them. Paths are the same for `deposits` and `withdrawals`:
 
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/api/v1/portal/deposits` | filters: `status, psp_code (admin only), currency, customer, callback_failed, date_from, date_to, limit, offset` |
-| POST | `/api/v1/portal/deposits` | admin: submit a request for a PSP. Same fields as the CRM API plus `psp_code`; no `timestamp` / `signature` / `idempotency_key`, and no `bank_account_id` on a deposit. Starts as `pending`, and that PSP's login reviews it. |
+| POST | `/api/v1/portal/deposits` | admin: submit a request for a PSP. Same fields as the CRM API plus `psp_code`; no `timestamp` / `signature` / `idempotency_key`, no `bank_account_id` on a deposit, and no `source_account_id` on a withdrawal (the PSP's `account_number` is used). Starts as `pending`, and that PSP's login or an admin reviews it. |
 | GET | `/api/v1/portal/deposits/{id}` | |
-| POST | `/api/v1/portal/deposits/{id}/processing` | PSP login: claim a pending request |
-| POST | `/api/v1/portal/deposits/{id}/approve` | PSP login: `{comment?}` → callback |
-| POST | `/api/v1/portal/deposits/{id}/reject` | PSP login: `{reason}` (required) → callback |
+| POST | `/api/v1/portal/deposits/{id}/processing` | admin or PSP login: claim a pending request |
+| POST | `/api/v1/portal/deposits/{id}/approve` | admin or PSP login: `{comment?}` → callback |
+| POST | `/api/v1/portal/deposits/{id}/reject` | admin or PSP login: `{reason}` (required) → callback |
 | POST | `/api/v1/portal/deposits/{id}/resend-callback` | admin or PSP login: new delivery cycle |
 
 Status flow: `pending → processing → approved | rejected`, or `pending → approved | rejected` directly. Approved and rejected are final. Rows are locked during a decision, so two logins cannot both decide the same request.
@@ -147,7 +144,7 @@ Status flow: `pending → processing → approved | rejected`, or `pending → a
 Deposits and withdrawals are submitted as **`multipart/form-data`** (not JSON), on both the CRM API and the portal: the usual fields as form fields, plus the screenshot as a file field named `screenshot`. The file is stored in a private S3 bucket (`S3_BUCKET`, `AWS_REGION`), not on the app server.
 
 * Accepted: PNG, JPEG, WEBP or PDF, up to `SCREENSHOT_MAX_MB` (5). The type is checked from the file's content.
-* Deposit: the `screenshot` file is required on the CRM API. An admin submitting from the portal can send a `screenshot_url` link instead.
+* Deposit: the `screenshot` file is required, on the CRM API and when an admin submits from the portal.
 * Withdrawal: the `screenshot` file is optional.
 * A repeated `idempotency_key` does not upload the file again.
 

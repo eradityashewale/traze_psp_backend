@@ -109,7 +109,7 @@ class TransactionMixin:
     customer_name: Mapped[str] = mapped_column(String(200))
     customer_email: Mapped[str] = mapped_column(String(255), index=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
-    currency: Mapped[str] = mapped_column(String(3))
+    currency: Mapped[str] = mapped_column(String(3), default="INR")
     comment: Mapped[str | None] = mapped_column(Text)  # note from the customer / CRM
     idempotency_key: Mapped[str | None] = mapped_column(BinaryString(100))
 
@@ -148,7 +148,7 @@ class Deposit(TransactionMixin, Base):
     PREFIX = "DEP"
 
     bank_account_id: Mapped[str | None] = mapped_column(String(50))  # not set on admin-submitted deposits
-    screenshot_url: Mapped[str] = mapped_column(String(1000))  # S3 key, or an external URL from the CRM
+    screenshot_url: Mapped[str] = mapped_column(String(1000))  # S3 key of the uploaded screenshot
     utr_number: Mapped[str | None] = mapped_column(String(100), index=True)
 
     psp: Mapped[Psp | None] = relationship(lazy="selectin")

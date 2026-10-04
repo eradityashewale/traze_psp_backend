@@ -66,15 +66,6 @@ def require_admin(user: CurrentUser) -> PortalUser:
 AdminUser = Annotated[PortalUser, Depends(require_admin)]
 
 
-def require_psp_user(user: CurrentUser) -> PortalUser:
-    if user.role != UserRole.psp:
-        raise AppError(ErrorCode.FORBIDDEN, "Only a PSP login can approve or reject requests")
-    return user
-
-
-PspUser = Annotated[PortalUser, Depends(require_psp_user)]
-
-
 # ---------- CRM calls (API Token + API Secret) ----------
 
 def get_calling_psp(

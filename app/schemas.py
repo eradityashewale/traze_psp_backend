@@ -10,8 +10,6 @@ from pydantic import (
     ConfigDict,
     EmailStr,
     Field,
-    HttpUrl,
-    TypeAdapter,
     field_validator,
     model_validator,
 )
@@ -23,7 +21,6 @@ Currency = Literal["INR"]
 Amount = Annotated[Decimal, Field(gt=0, max_digits=18, decimal_places=2)]
 # Stored S3 keys leave the API as short-lived presigned links.
 ScreenshotLink = Annotated[str, AfterValidator(view_url)]
-_http_url = TypeAdapter(HttpUrl)
 
 IFSC_RE = re.compile(r"^[A-Z]{4}0[A-Z0-9]{6}$")
 SWIFT_RE = re.compile(r"^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$")
@@ -215,7 +212,6 @@ class DepositFields(ScreenshotForm):
     customer_name: str = Field(min_length=1, max_length=200)
     customer_email: EmailStr
     amount: Amount
-    currency: Currency = "INR"
     utr_number: str | None = Field(default=None, max_length=100)
     comment: str | None = Field(default=None, max_length=2000)
 
@@ -225,7 +221,6 @@ class WithdrawalFields(ScreenshotForm):
     customer_email: EmailStr
     amount: Amount
     currency: Currency = "INR"
-    source_account_id: str = Field(min_length=1, max_length=50)
     comment: str | None = Field(default=None, max_length=2000)
 
     @field_validator("dest_ifsc", check_fields=False)
@@ -251,6 +246,7 @@ class DepositCreate(DepositFields):
 
 
 class WithdrawalCreate(WithdrawalFields, SignedRequest):
+    source_account_id: str = Field(min_length=1, max_length=50)
     dest_bank_name: str = Field(min_length=1, max_length=200)
     dest_account_number: str = Field(min_length=4, max_length=50, pattern=r"^[A-Za-z0-9]+$")
     dest_ifsc: str
@@ -308,25 +304,7 @@ class AdminDepositCreate(DepositFields):
     """Admin submits a deposit from the portal on behalf of a PSP (no CRM signature)."""
 
     psp_code: str = Field(description="PSP that will review this deposit")
-    screenshot_url: str | None = Field(
-        default=None, max_length=1000, description="Link to a screenshot hosted elsewhere, if no file is attached"
-    )
-
-    @field_validator("screenshot_url")
-    @classmethod
-    def check_screenshot_url(cls, v: str | None) -> str | None:
-        if v is None:
-            return v
-        try:
-            return str(_http_url.validate_python(v))
-        except ValueError:
-            raise ValueError("screenshot_url must be an http(s) URL")
-
-    @model_validator(mode="after")
-    def screenshot_required(self):
-        if self.screenshot is None and self.screenshot_url is None:
-            raise ValueError("A deposit needs a screenshot: attach the file as `screenshot` or send screenshot_url")
-        return self
+    screenshot: UploadFile = Field(description="Screenshot file (PNG, JPEG, WEBP or PDF). Stored in S3.")
 
 
 class AdminWithdrawalCreate(WithdrawalFields):

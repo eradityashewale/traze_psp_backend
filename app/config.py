@@ -12,7 +12,6 @@ class Settings(BaseSettings):
     # --- environment (checklist 1.2 / 1.3) ---
     environment: Literal["local", "uat", "production"] = "local"
     public_api_base_url: str = "http://localhost:8000"  # e.g. https://<uat-host>/PSPtest
-    admin_portal_url: str | None = None  # e.g. https://<uat-host>/PSPtestadmin/
 
     # Either set DB_NAME / DB_USER / DB_PASS / DB_HOST, or a full DATABASE_URL (which wins).
     db_name: str | None = None
@@ -92,14 +91,6 @@ class Settings(BaseSettings):
     aws_secret_access_key: str | None = None
     s3_url_expires_seconds: int = 900  # lifetime of the view links in API responses
     screenshot_max_mb: int = 5
-
-    # --- informational answers for the questionnaire (checklist 10-13) ---
-    pci_dss_level: str = "To be confirmed with the PSP team"
-    dr_description: str = "Secondary DR site; failover is automatic on the PSP side, API URLs do not change"
-    monitoring_channel: str = "Skype/WhatsApp group shared at onboarding; GET /health/ready; error codes at /api/v1/meta/error-codes"
-    support_technical: str = ""
-    support_business: str = ""
-    support_customer_service: str = ""
 
     cors_origins: str = ""  # comma-separated
 
