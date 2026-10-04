@@ -300,6 +300,10 @@ class RejectRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=2000, description="Always sent to the CRM in the callback")
 
 
+class ReverseRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=2000, description="Always sent to the CRM in the callback")
+
+
 class AdminDepositCreate(DepositFields):
     """Admin submits a deposit from the portal on behalf of a PSP (no CRM signature)."""
 

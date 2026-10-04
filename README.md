@@ -59,6 +59,7 @@ Schema changes are managed with **Alembic**. Migration files live in `alembic/ve
 | `0010` | Drops `psps.allowed_currencies` (INR is the only currency) |
 | `0011` | Drops `psps.bank_account_id`; `psps.account_number` is the PSP's one bank account |
 | `0012` | Drops `psps.client_public_key` (the CRM's key is a file set in `.env`) |
+| `0013` | Adds the `reversed` status to deposits and withdrawals |
 
 By default the app runs `alembic upgrade head` when it starts (`RUN_MIGRATIONS_ON_STARTUP=true`), so a new migration is applied on the next start. Set it to `false` to apply migrations yourself.
 
@@ -135,9 +136,10 @@ A PSP login only ever sees and acts on its own PSP's requests. An admin sees all
 | POST | `/api/v1/portal/deposits/{id}/processing` | admin or PSP login: claim a pending request |
 | POST | `/api/v1/portal/deposits/{id}/approve` | admin or PSP login: `{comment?}` → callback |
 | POST | `/api/v1/portal/deposits/{id}/reject` | admin or PSP login: `{reason}` (required) → callback |
+| POST | `/api/v1/portal/deposits/{id}/reverse` | admin or PSP login: `{reason}` (required). Only an approved request, and only once → callback |
 | POST | `/api/v1/portal/deposits/{id}/resend-callback` | admin or PSP login: new delivery cycle |
 
-Status flow: `pending → processing → approved | rejected`, or `pending → approved | rejected` directly. Approved and rejected are final. Rows are locked during a decision, so two logins cannot both decide the same request.
+Status flow: `pending → processing → approved | rejected`, or `pending → approved | rejected` directly. An approved request can be reversed once (`approved → reversed`). Rejected and reversed are final. Rows are locked during a decision, so two logins cannot both decide the same request.
 
 ### Screenshots (S3)
 
@@ -209,7 +211,7 @@ To get the MD5 `signature` by hand (and the `timestamp` for a withdrawal): `pyth
 
 ## Callbacks (portal → CRM)
 
-One CRM serves every PSP, so its callback endpoint is set once in `.env` (`CRM_CALLBACK_URL`, `CRM_CALLBACK_USERNAME`, `CRM_CALLBACK_PASSWORD`) and is not part of a PSP. After each approve or reject, the portal `POST`s to `CRM_CALLBACK_URL` with:
+One CRM serves every PSP, so its callback endpoint is set once in `.env` (`CRM_CALLBACK_URL`, `CRM_CALLBACK_USERNAME`, `CRM_CALLBACK_PASSWORD`) and is not part of a PSP. After each approve, reject or reverse, the portal `POST`s to `CRM_CALLBACK_URL` with:
 * HTTP Basic auth (`CRM_CALLBACK_USERNAME` / `CRM_CALLBACK_PASSWORD`)
 * `X-Signature`: RSA-SHA256 of the raw body, signed with the portal key. Verify it with `/api/v1/meta/public-key`.
 * A `signature` field in the body: MD5 over `amount, currency, customer_email, <deposit_id|withdrawal_id>, status, timestamp` plus the salt.

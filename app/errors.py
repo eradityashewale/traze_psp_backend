@@ -35,7 +35,7 @@ class ErrorCode(Enum):
     PSP_HAS_OPEN_TRANSACTIONS = ("E2006", 409, "PSP has pending or processing transactions")
     PSP_CONFIG_INVALID = ("E2007", 422, "Invalid PSP configuration")
     TX_NOT_FOUND = ("E3001", 404, "Transaction not found")
-    TX_ALREADY_FINAL = ("E3002", 409, "Transaction is already approved or rejected")
+    TX_ALREADY_FINAL = ("E3002", 409, "Transaction is already approved, rejected or reversed")
     TX_INVALID_TRANSITION = ("E3003", 409, "Status change not allowed")
     FILE_INVALID = ("E3004", 422, "Uploaded file is not an accepted screenshot")
     USER_ALREADY_EXISTS =("E4001", 409, "A user with this email already exists")

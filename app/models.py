@@ -20,7 +20,7 @@ from app.db_types import BinaryString, UTCDateTime, now6
 
 
 class UserRole(str, enum.Enum):
-    admin = "admin"  # manages PSPs, views everything, does not decide
+    admin = "admin"  # manages PSPs, views and decides every PSP's requests
     psp = "psp"  # a PSP login: reviews and decides its own PSP's requests
 
 
@@ -34,9 +34,10 @@ class TxStatus(str, enum.Enum):
     processing = "processing"
     approved = "approved"
     rejected = "rejected"
+    reversed = "reversed"  # an approved request that was taken back; can happen once
 
 
-FINAL_STATUSES = {TxStatus.approved, TxStatus.rejected}
+FINAL_STATUSES = {TxStatus.approved, TxStatus.rejected, TxStatus.reversed}
 OPEN_STATUSES = {TxStatus.pending, TxStatus.processing}
 
 
@@ -116,7 +117,7 @@ class TransactionMixin:
     status: Mapped[TxStatus] = mapped_column(
         _enum(TxStatus, "tx_status"), default=TxStatus.pending, index=True
     )
-    review_comment: Mapped[str | None] = mapped_column(Text)  # approval / rejection reason
+    review_comment: Mapped[str | None] = mapped_column(Text)  # approval / rejection / reversal reason
     reviewed_by_id: Mapped[int | None] = mapped_column(ForeignKey("portal_users.id", ondelete="SET NULL"))
     reviewed_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 

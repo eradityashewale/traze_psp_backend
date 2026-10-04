@@ -15,7 +15,7 @@ from sqlalchemy import func, or_, select
 from app.deps import AdminUser, CurrentUser, DbSession
 from app.errors import AppError, ErrorCode
 from app.models import FINAL_STATUSES, PortalUser, Psp, TxStatus, UserRole
-from app.schemas import ApproveRequest, Page, RejectRequest
+from app.schemas import ApproveRequest, Page, RejectRequest, ReverseRequest
 from app.services.audit import audit
 from app.services.callback import deliver_due, schedule_callback
 from app.services.transactions import Transaction, change_status, create_transaction, ensure_psp_can_accept
@@ -128,12 +128,23 @@ def build_review_router(
         bg.add_task(deliver_due, model, tx.id)
         return tx
 
+    @router.post("/{public_id}/reverse", response_model=out_schema)
+    def reverse(
+        public_id: str, body: ReverseRequest, db: DbSession, user: CurrentUser, bg: BackgroundTasks, request: Request
+    ):
+        """Reverse an approved request. Allowed once per request; the reason is sent to the CRM."""
+        tx = change_status(db, model, public_id, user, TxStatus.reversed, body.reason)
+        audit(db, f"{kind}.reversed", actor_type="user", actor_id=user.id, target=public_id,
+              details={"reason": body.reason}, request=request)
+        bg.add_task(deliver_due, model, tx.id)
+        return tx
+
     @router.post("/{public_id}/resend-callback", status_code=status.HTTP_202_ACCEPTED)
     def resend_callback(public_id: str, db: DbSession, user: CurrentUser, bg: BackgroundTasks, request: Request):
         """Re-send the decision to the CRM, e.g. after all automatic retries failed."""
         tx = _get(db, public_id, user)
         if tx.status not in FINAL_STATUSES:
-            raise AppError(ErrorCode.TX_INVALID_TRANSITION, "Only approved or rejected requests have a callback")
+            raise AppError(ErrorCode.TX_INVALID_TRANSITION, "Only approved, rejected or reversed requests have a callback")
         schedule_callback(tx)
         audit(db, f"{kind}.callback_resent", actor_type="user", actor_id=user.id, target=public_id, request=request)
         bg.add_task(deliver_due, model, tx.id)

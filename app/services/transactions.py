@@ -77,7 +77,7 @@ def change_status(
     new_status: TxStatus,
     comment: str | None = None,
 ) -> Transaction:
-    """Move a transaction to processing / approved / rejected.
+    """Move a transaction to processing / approved / rejected / reversed.
 
     The row is locked so two people can never both decide the same request.
     A final decision also queues the CRM callback in the same DB transaction.
@@ -89,7 +89,14 @@ def change_status(
     tx = db.scalar(query.with_for_update())
     if tx is None:
         raise AppError(ErrorCode.TX_NOT_FOUND, f"{public_id} not found")
-    if tx.status in FINAL_STATUSES:
+    if new_status == TxStatus.reversed:
+        # Only an approved request can be reversed, and reversed is final, so it happens at most once.
+        if tx.status != TxStatus.approved:
+            raise AppError(
+                ErrorCode.TX_INVALID_TRANSITION,
+                f"{public_id} is {tx.status.value}; only an approved request can be reversed, and only once",
+            )
+    elif tx.status in FINAL_STATUSES:
         raise AppError(ErrorCode.TX_ALREADY_FINAL, f"{public_id} is already {tx.status.value}")
     if new_status == TxStatus.processing and tx.status != TxStatus.pending:
         raise AppError(ErrorCode.TX_INVALID_TRANSITION, f"{public_id} is already {tx.status.value}")
