@@ -51,6 +51,9 @@ Schema changes are managed with **Alembic**. Migration files live in `alembic/ve
 |---|---|
 | `0001` | Initial schema: all tables |
 | `0002` | Adds `psps.account_number` |
+| `0003` | Makes `deposits.bank_account_id` optional (admin-submitted deposits have none) |
+| `0004` | Makes the withdrawal destination bank details optional (admin-submitted withdrawals may omit them) |
+| `0005` | Adds `withdrawals.screenshot_url` (optional screenshot) |
 
 By default the app runs `alembic upgrade head` when it starts (`RUN_MIGRATIONS_ON_STARTUP=true`), so a new migration is applied on the next start. Set it to `false` to apply migrations yourself.
 
@@ -75,7 +78,7 @@ A database created before migrations existed is adopted automatically on startup
 
 | Role | Who | Can do |
 |---|---|---|
-| `admin` | You (the portal operator) | Add, edit and delete PSPs, manage logins, view **all** deposits and withdrawals, audit logs. Does **not** approve or reject. |
+| `admin` | You (the portal operator) | Add, edit and delete PSPs, manage logins, view **all** deposits and withdrawals, submit a deposit or withdrawal for any PSP from the portal, audit logs. Does **not** approve or reject. |
 | `psp` | Each PSP | Log in, see **only its own** deposits and withdrawals, approve or reject them. |
 
 Creating a PSP also creates its portal login (`login_email`, `login_password`). A PSP can have more logins via `POST /api/v1/users`. When a PSP is deactivated its logins stop working; when it's deleted its logins are removed.
@@ -87,6 +90,7 @@ Creating a PSP also creates its portal login (`login_email`, `login_password`). 
 |---|---|---|
 | POST | `/api/v1/auth/login` | `{email, password}` → `access_token`, for admins and PSP logins. 5 wrong passwords lock the account for 15 minutes. |
 | GET | `/api/v1/auth/me` | |
+| POST | `/api/v1/auth/change-password` | `{current_password, new_password}` — change your own password. Same call for admins and PSP logins; the token decides whose it is. |
 | GET | `/api/v1/users?psp_code=` | admin: list logins, optionally for one PSP |
 | POST | `/api/v1/users` | admin: create an admin (`role: admin`) or an extra PSP login (`role: psp`, `psp_code`) |
 | PATCH | `/api/v1/users/{id}` | admin: rename, deactivate, reset password, `unlock` |
@@ -115,11 +119,12 @@ Headers: `Authorization: Bearer <API_TOKEN>`, `X-API-Secret: <API_SECRET>`, plus
 A repeated `idempotency_key` returns the existing record with `200`; a new one returns `201`.
 
 ### Portal review (JWT)
-A PSP login only ever sees and acts on its own PSP's requests. An admin sees all of them but can't decide. Paths are the same for `deposits` and `withdrawals`:
+A PSP login only ever sees and acts on its own PSP's requests. An admin sees all of them and can submit new ones, but can't decide. Paths are the same for `deposits` and `withdrawals`:
 
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/api/v1/portal/deposits` | filters: `status, psp_code (admin only), currency, customer, callback_failed, date_from, date_to, limit, offset` |
+| POST | `/api/v1/portal/deposits` | admin: submit a request for a PSP. Same fields as the CRM API plus `psp_code`; no `timestamp` / `signature` / `idempotency_key`, and no `bank_account_id` on a deposit. Starts as `pending`, and that PSP's login reviews it. |
 | GET | `/api/v1/portal/deposits/{id}` | |
 | POST | `/api/v1/portal/deposits/{id}/processing` | PSP login: claim a pending request |
 | POST | `/api/v1/portal/deposits/{id}/approve` | PSP login: `{comment?}` → callback |
@@ -127,6 +132,26 @@ A PSP login only ever sees and acts on its own PSP's requests. An admin sees all
 | POST | `/api/v1/portal/deposits/{id}/resend-callback` | admin or PSP login: new delivery cycle |
 
 Status flow: `pending → processing → approved | rejected`, or `pending → approved | rejected` directly. Approved and rejected are final. Rows are locked during a decision, so two logins cannot both decide the same request.
+
+### Screenshots (S3)
+
+Deposits and withdrawals are submitted as **`multipart/form-data`** (not JSON), on both the CRM API and the portal: the usual fields as form fields, plus the screenshot as a file field named `screenshot`. The file is stored in a private S3 bucket (`S3_BUCKET`, `AWS_REGION`), not on the app server.
+
+* Accepted: PNG, JPEG, WEBP or PDF, up to `SCREENSHOT_MAX_MB` (5). The type is checked from the file's content.
+* Deposit: a screenshot is required, either the `screenshot` file or a `screenshot_url` link to a file hosted elsewhere.
+* Withdrawal: the `screenshot` file is optional.
+* A repeated `idempotency_key` does not upload the file again.
+
+```bash
+curl -X POST https://<host>/api/v1/deposits \
+  -H "Authorization: Bearer <API_TOKEN>" -H "X-API-Secret: <API_SECRET>" \
+  -F customer_name="Rahul Sharma" -F customer_email=rahul@example.com \
+  -F amount=1200 -F currency=INR -F bank_account_id=sbi \
+  -F timestamp=<timestamp> -F signature=<md5> \
+  -F screenshot=@receipt.png
+```
+
+In portal responses `screenshot_url` is a presigned link valid for `S3_URL_EXPIRES_SECONDS` (900); fetch the record again for a fresh one. On EC2, give the instance an IAM role with `s3:PutObject` and `s3:GetObject` on `arn:aws:s3:::<bucket>/screenshots/*` and leave `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` empty. Keep **Block Public Access** on for the bucket.
 
 ### Meta & monitoring
 | Method | Path | Auth |
@@ -170,9 +195,9 @@ signature = md5("k1=v1&k2=v2&...&salt=<SIGNATURE_SALT>")   # keys sorted alphabe
 Amounts are written without trailing zeros (`12500`, `999.5`).
 
 ### 2. RSA signature (when the PSP has a `client_public_key`)
-The CRM signs the **exact raw request body** with its private key: RSA PKCS#1 v1.5 + SHA-256, base64-encoded in the `X-Signature` header. Keys must be RSA with at least 2048 bits.
+The CRM signs the **exact raw request body** (the multipart bytes as sent, boundaries and file included) with its private key: RSA PKCS#1 v1.5 + SHA-256, base64-encoded in the `X-Signature` header. Keys must be RSA with at least 2048 bits.
 
-To sign by hand: `python scripts/sign_request.py deposit body.json <salt> [crm_private_key.pem]` (add `--ist` for an IST timestamp).
+To get the `timestamp` and MD5 `signature` by hand: `python scripts/sign_request.py deposit body.json <salt>` (add `--ist` for an IST timestamp), then send the printed values as form fields.
 
 ## Callbacks (portal → CRM)
 
