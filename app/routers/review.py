@@ -14,7 +14,7 @@ from sqlalchemy import func, or_, select
 
 from app.deps import AdminUser, CurrentUser, DbSession
 from app.errors import AppError, ErrorCode
-from app.models import FINAL_STATUSES, PortalUser, Psp, TxStatus, UserRole
+from app.models import FINAL_STATUSES, CreatedBy, PortalUser, Psp, TxStatus, UserRole
 from app.schemas import ApproveRequest, Page, RejectRequest, ReverseRequest
 from app.services.audit import audit
 from app.services.callback import deliver_due, schedule_callback
@@ -90,7 +90,7 @@ def build_review_router(
         if account_field:
             # A PSP has one bank account, so the admin does not pick it.
             data[account_field] = psp.account_number or ""
-        tx, _ = create_transaction(db, model, psp, data, body.screenshot)
+        tx, _ = create_transaction(db, model, psp, data, CreatedBy.admin, body.screenshot)
         audit(db, f"{kind}.submitted", actor_type="user", actor_id=user.id, target=tx.public_id,
               details={"psp_code": psp.psp_code, "source": "admin_portal"}, request=request)
         return tx

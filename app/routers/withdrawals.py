@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Form, Request, Response, status
 
 from app.deps import CallingPsp, DbSession, VerifiedPsp
-from app.models import Withdrawal
+from app.models import CreatedBy, Withdrawal
 from app.routers.review import build_review_router
 from app.schemas import (
     AdminWithdrawalCreate,
@@ -39,13 +39,12 @@ def submit_withdrawal(
             "dest_account_number": body.dest_account_number,
             "source_account_id": body.source_account_id,
         },
-        body.timestamp,
         body.signature,
     )
     ensure_psp_can_accept(psp, body.source_account_id)
 
-    data = body.model_dump(exclude={"timestamp", "signature", "screenshot"})
-    tx, created = create_transaction(db, Withdrawal, psp, data, body.screenshot)
+    data = body.model_dump(exclude={"signature", "screenshot"})
+    tx, created = create_transaction(db, Withdrawal, psp, data, CreatedBy.crm, body.screenshot)
     if created:
         audit(db, "withdrawal.submitted", actor_type="psp", actor_id=psp.psp_code, target=tx.public_id, request=request)
     else:

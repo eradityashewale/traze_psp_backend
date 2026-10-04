@@ -9,7 +9,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.errors import AppError, ErrorCode
-from app.models import FINAL_STATUSES, Deposit, PortalUser, Psp, PspStatus, TxStatus, UserRole, Withdrawal
+from app.models import (
+    FINAL_STATUSES,
+    CreatedBy,
+    Deposit,
+    PortalUser,
+    Psp,
+    PspStatus,
+    TxStatus,
+    UserRole,
+    Withdrawal,
+)
 from app.services.callback import schedule_callback
 from app.services.storage import upload_screenshot
 
@@ -24,9 +34,16 @@ def ensure_psp_can_accept(psp: Psp, bank_account_id: str | None) -> None:
 
 
 def create_transaction(
-    db: Session, model: type[Transaction], psp: Psp, data: dict[str, Any], screenshot: UploadFile | None = None
+    db: Session,
+    model: type[Transaction],
+    psp: Psp,
+    data: dict[str, Any],
+    created_by: CreatedBy,
+    screenshot: UploadFile | None = None,
 ) -> tuple[Transaction, bool]:
     """Insert a new pending transaction. Returns (tx, created).
+
+    created_by records who submitted it: the CRM through the API, or an admin from the portal.
 
     If the idempotency_key was already used by this PSP, the existing record is
     returned with created=False instead of inserting a duplicate.
@@ -41,7 +58,7 @@ def create_transaction(
     if screenshot is not None:
         folder = "deposit" if model is Deposit else "withdrawal"
         data = {**data, "screenshot_url": upload_screenshot(screenshot, folder)}
-    tx = model(**data, psp_id=psp.id, status=TxStatus.pending)
+    tx = model(**data, psp_id=psp.id, status=TxStatus.pending, created_by=created_by)
     db.add(tx)
     try:
         db.flush()

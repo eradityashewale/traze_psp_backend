@@ -14,7 +14,7 @@ from pydantic import (
     model_validator,
 )
 
-from app.models import PspStatus, TxStatus, UserRole
+from app.models import CreatedBy, PspStatus, TxStatus, UserRole
 from app.services.storage import view_url
 
 Currency = Literal["INR"]
@@ -181,17 +181,6 @@ class PspList(BaseModel):
 
 # ---------- CRM-facing requests ----------
 
-class SignedRequest(BaseModel):
-    timestamp: str | None = Field(
-        default=None,
-        description=(
-            "ISO-8601 time the request was signed, in UTC (2026-09-25T09:45:00Z) or with an offset such as "
-            "IST (2026-09-25T15:15:00+05:30). A time without Z or an offset is read as UTC."
-        ),
-    )
-    signature: str | None = Field(default=None, description="MD5 signature, see README")
-
-
 class ScreenshotForm(BaseModel):
     """Deposits and withdrawals are submitted as multipart/form-data so the screenshot travels with them."""
 
@@ -245,13 +234,14 @@ class DepositCreate(DepositFields):
     signature: str | None = Field(default=None, description="MD5 signature, see README")
 
 
-class WithdrawalCreate(WithdrawalFields, SignedRequest):
+class WithdrawalCreate(WithdrawalFields):
     source_account_id: str = Field(min_length=1, max_length=50)
     dest_bank_name: str = Field(min_length=1, max_length=200)
     dest_account_number: str = Field(min_length=4, max_length=50, pattern=r"^[A-Za-z0-9]+$")
     dest_ifsc: str
     dest_account_name: str = Field(min_length=1, max_length=200)
     idempotency_key: str | None = Field(default=None, max_length=100)
+    signature: str | None = Field(default=None, description="MD5 signature, see README")
 
 
 class DepositSubmitted(BaseModel):
@@ -331,6 +321,7 @@ class TransactionOutBase(BaseModel):
     amount: Decimal
     currency: str
     comment: str | None
+    created_by: CreatedBy  # admin = submitted from the portal, crm = submitted through the CRM API
     status: TxStatus
     review_comment: str | None
     reviewed_by: str | None

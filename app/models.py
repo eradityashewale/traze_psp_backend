@@ -37,6 +37,11 @@ class TxStatus(str, enum.Enum):
     reversed = "reversed"  # an approved request that was taken back; can happen once
 
 
+class CreatedBy(str, enum.Enum):
+    admin = "admin"  # submitted by an admin from the portal
+    crm = "crm"  # submitted by the CRM through the API
+
+
 FINAL_STATUSES = {TxStatus.approved, TxStatus.rejected, TxStatus.reversed}
 OPEN_STATUSES = {TxStatus.pending, TxStatus.processing}
 
@@ -113,6 +118,9 @@ class TransactionMixin:
     currency: Mapped[str] = mapped_column(String(3), default="INR")
     comment: Mapped[str | None] = mapped_column(Text)  # note from the customer / CRM
     idempotency_key: Mapped[str | None] = mapped_column(BinaryString(100))
+    created_by: Mapped[CreatedBy] = mapped_column(
+        _enum(CreatedBy, "tx_created_by"), default=CreatedBy.crm, server_default=CreatedBy.crm.value
+    )
 
     status: Mapped[TxStatus] = mapped_column(
         _enum(TxStatus, "tx_status"), default=TxStatus.pending, index=True

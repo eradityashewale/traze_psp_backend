@@ -60,6 +60,7 @@ Schema changes are managed with **Alembic**. Migration files live in `alembic/ve
 | `0011` | Drops `psps.bank_account_id`; `psps.account_number` is the PSP's one bank account |
 | `0012` | Drops `psps.client_public_key` (the CRM's key is a file set in `.env`) |
 | `0013` | Adds the `reversed` status to deposits and withdrawals |
+| `0014` | Adds `created_by` (`admin` or `crm`) to deposits and withdrawals; existing rows are filled in from the audit log |
 
 By default the app runs `alembic upgrade head` when it starts (`RUN_MIGRATIONS_ON_STARTUP=true`), so a new migration is applied on the next start. Set it to `false` to apply migrations yourself.
 
@@ -123,7 +124,7 @@ Headers: `Authorization: Bearer <API_TOKEN>`, `X-API-Secret: <API_SECRET>`, plus
 
 A repeated `idempotency_key` returns the existing record with `200`; a new one returns `201`. On a deposit the key is optional: the portal generates one when it is not sent.
 
-`INR` is the only currency. A deposit has no `currency` field (CRM API and portal) and is always stored as `INR`. On a withdrawal `currency` defaults to `INR` when it is not sent, and any other value is rejected with `E1000`. A PSP has no currency setting. A CRM deposit has no `timestamp`.
+`INR` is the only currency. A deposit has no `currency` field (CRM API and portal) and is always stored as `INR`. On a withdrawal `currency` defaults to `INR` when it is not sent, and any other value is rejected with `E1000`. A PSP has no currency setting. CRM requests carry no `timestamp`; the portal records `created_at` itself when the request arrives.
 
 ### Portal review (JWT)
 A PSP login only ever sees and acts on its own PSP's requests. An admin sees all of them, can submit new ones, and can approve or reject any of them. Paths are the same for `deposits` and `withdrawals`:
@@ -131,7 +132,7 @@ A PSP login only ever sees and acts on its own PSP's requests. An admin sees all
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/api/v1/portal/deposits` | filters: `status, psp_code (admin only), currency, customer, callback_failed, date_from, date_to, limit, offset` |
-| POST | `/api/v1/portal/deposits` | admin: submit a request for a PSP. Same fields as the CRM API plus `psp_code`; no `timestamp` / `signature` / `idempotency_key`, no `bank_account_id` on a deposit, and no `source_account_id` on a withdrawal (the PSP's `account_number` is used). Starts as `pending`, and that PSP's login or an admin reviews it. |
+| POST | `/api/v1/portal/deposits` | admin: submit a request for a PSP. Same fields as the CRM API plus `psp_code`; no `signature` / `idempotency_key`, no `bank_account_id` on a deposit, and no `source_account_id` on a withdrawal (the PSP's `account_number` is used). Starts as `pending`, and that PSP's login or an admin reviews it. |
 | GET | `/api/v1/portal/deposits/{id}` | |
 | POST | `/api/v1/portal/deposits/{id}/processing` | admin or PSP login: claim a pending request |
 | POST | `/api/v1/portal/deposits/{id}/approve` | admin or PSP login: `{comment?}` → callback |
@@ -140,6 +141,8 @@ A PSP login only ever sees and acts on its own PSP's requests. An admin sees all
 | POST | `/api/v1/portal/deposits/{id}/resend-callback` | admin or PSP login: new delivery cycle |
 
 Status flow: `pending → processing → approved | rejected`, or `pending → approved | rejected` directly. An approved request can be reversed once (`approved → reversed`). Rejected and reversed are final. Rows are locked during a decision, so two logins cannot both decide the same request.
+
+Every deposit and withdrawal records who submitted it in `created_by`: `admin` when an admin submitted it from the portal, `crm` when it came through the CRM API. The portal responses include it.
 
 ### Screenshots (S3)
 
@@ -189,7 +192,7 @@ The full list is at `GET /api/v1/meta/error-codes`.
 ## Request security (CRM → portal)
 
 ### 1. MD5 signature (required)
-Every CRM `POST` includes a `signature`. A withdrawal also includes `timestamp` (ISO-8601, UTC `...Z` or with an offset such as IST `...+05:30`, within ±5 min); a deposit has none.
+Every CRM `POST` includes a `signature`. No `timestamp` is sent.
 
 ```
 signature = md5("k1=v1&k2=v2&...&salt=<SIGNATURE_SALT>")   # keys sorted alphabetically
@@ -198,7 +201,7 @@ signature = md5("k1=v1&k2=v2&...&salt=<SIGNATURE_SALT>")   # keys sorted alphabe
 | Request | Signed fields |
 |---|---|
 | Deposit | `amount, bank_account_id, customer_email` |
-| Withdrawal | `amount, currency, customer_email, dest_account_number, source_account_id, timestamp` |
+| Withdrawal | `amount, currency, customer_email, dest_account_number, source_account_id` |
 
 Amounts are written without trailing zeros (`12500`, `999.5`).
 
@@ -207,7 +210,7 @@ One CRM serves every PSP, so its public key is a PEM file on the server, pointed
 
 The CRM signs the **exact raw request body** (the multipart bytes as sent, boundaries and file included) with its private key: RSA PKCS#1 v1.5 + SHA-256, base64-encoded in the `X-Signature` header. Keys must be RSA with at least 2048 bits.
 
-To get the MD5 `signature` by hand (and the `timestamp` for a withdrawal): `python scripts/sign_request.py deposit body.json <salt>` (add `--ist` for an IST timestamp), then send the printed values as form fields.
+To get the MD5 `signature` by hand: `python scripts/sign_request.py deposit body.json <salt>`, then send the printed values as form fields.
 
 ## Callbacks (portal → CRM)
 

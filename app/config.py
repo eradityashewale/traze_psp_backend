@@ -55,7 +55,6 @@ class Settings(BaseSettings):
 
     # --- MD5 signature (checklist 6) ---
     require_signature: bool = True
-    signature_max_skew_seconds: int = 300  # 0 disables the timestamp freshness check
 
     # --- public / private key (checklist 7) ---
     portal_private_key_path: str = "keys/portal_private_key.pem"

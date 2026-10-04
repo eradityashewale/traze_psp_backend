@@ -6,7 +6,7 @@ from typing import Annotated
 from fastapi import APIRouter, Form, Request, Response, status
 
 from app.deps import CallingPsp, DbSession, VerifiedPsp
-from app.models import Deposit
+from app.models import CreatedBy, Deposit
 from app.routers.review import build_review_router
 from app.schemas import AdminDepositCreate, DepositCreate, DepositOut, DepositStatusOut, DepositSubmitted
 from app.services.audit import audit
@@ -32,15 +32,13 @@ def submit_deposit(
             "bank_account_id": body.bank_account_id,
             "customer_email": body.customer_email,
         },
-        None,
         body.signature,
-        use_timestamp=False,
     )
     ensure_psp_can_accept(psp, body.bank_account_id)
 
     data = body.model_dump(exclude={"signature", "screenshot"})
     data["idempotency_key"] = data["idempotency_key"] or uuid.uuid4().hex
-    tx, created = create_transaction(db, Deposit, psp, data, body.screenshot)
+    tx, created = create_transaction(db, Deposit, psp, data, CreatedBy.crm, body.screenshot)
     if created:
         audit(db, "deposit.submitted", actor_type="psp", actor_id=psp.psp_code, target=tx.public_id, request=request)
     else:
