@@ -19,7 +19,7 @@ _portal_bearer = HTTPBearer(
     auto_error=False,
     scheme_name="PortalJWT",
     description="PSP team login. Paste the `access_token` (eyJ...) from POST /api/v1/auth/login. "
-    "Used by /auth/me, /users, /psps, /portal/..., /audit-logs.",
+    "Used by /auth/me, /auth/change-password, /users, /psps, /portal/..., /audit-logs.",
 )
 _crm_bearer = HTTPBearer(
     auto_error=False,

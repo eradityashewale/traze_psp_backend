@@ -7,7 +7,7 @@ from app.config import get_settings
 from app.deps import AdminUser, CurrentUser, DbSession, ensure_psp_login_allowed
 from app.errors import AppError, ErrorCode
 from app.models import PortalUser, Psp
-from app.schemas import LoginRequest, TokenResponse, UserCreate, UserOut, UserUpdate
+from app.schemas import ChangePasswordRequest, LoginRequest,TokenResponse, UserCreate, UserOut, UserUpdate
 from app.security import create_access_token, hash_password, verify_password
 from app.services.audit import audit
 from app.services.users import new_portal_user
@@ -60,6 +60,17 @@ def login(body: LoginRequest, db: DbSession, request: Request):
 @router.get("/auth/me", response_model=UserOut)
 def me(user: CurrentUser):
     return user
+
+
+@router.post("/auth/change-password")
+def change_password(body: ChangePasswordRequest, db: DbSession, user: CurrentUser, request: Request):
+    """Change your own password. Same call for admins and PSP logins; the token decides whose it is."""
+    if not verify_password(body.current_password, user.password_hash):
+        audit(db, "auth.password_change_failed", actor_type="user", actor_id=user.id, request=request)
+        raise AppError(ErrorCode.PASSWORD_INCORRECT)
+    user.password_hash = hash_password(body.new_password)
+    audit(db, "auth.password_changed", actor_type="user", actor_id=user.id, target=str(user.id), request=request)
+    return {"success": True, "message": "Password changed"}
 
 
 @router.get("/users", response_model=list[UserOut])

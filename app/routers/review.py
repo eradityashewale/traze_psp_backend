@@ -2,7 +2,8 @@
 
 Used by portal logins (JWT), not by the CRM:
 * a PSP login sees only its own PSP's requests and is the one who approves / rejects them;
-* an admin can view every PSP's requests (read-only) and re-send callbacks.
+* an admin can view every PSP's requests, submit new ones for a PSP and re-send callbacks,
+  but does not approve / reject.
 """
 
 from datetime import date, datetime, time, timedelta, timezone
@@ -10,16 +11,18 @@ from datetime import date, datetime, time, timedelta, timezone
 from fastapi import APIRouter, BackgroundTasks, Query, Request, status
 from sqlalchemy import func, or_, select
 
-from app.deps import CurrentUser, DbSession, PspUser
+from app.deps import AdminUser, CurrentUser, DbSession, PspUser
 from app.errors import AppError, ErrorCode
 from app.models import FINAL_STATUSES, PortalUser, Psp, TxStatus, UserRole
 from app.schemas import ApproveRequest, Page, RejectRequest
 from app.services.audit import audit
 from app.services.callback import deliver_due, schedule_callback
-from app.services.transactions import Transaction, change_status
+from app.services.transactions import Transaction, change_status, create_transaction, ensure_psp_can_accept
 
 
-def build_review_router(model: type[Transaction], out_schema: type, kind: str) -> APIRouter:
+def build_review_router(
+    model: type[Transaction], out_schema: type, create_schema: type, kind: str, account_field: str | None = None
+) -> APIRouter:
     router = APIRouter(prefix=f"/api/v1/portal/{kind}s", tags=[f"Portal · {kind.title()} review"])
 
     def _scoped(query, user: PortalUser):
@@ -68,6 +71,22 @@ def build_review_router(model: type[Transaction], out_schema: type, kind: str) -
         total = db.scalar(select(func.count()).select_from(query.subquery()))
         items = db.scalars(query.order_by(model.created_at.desc()).limit(limit).offset(offset)).all()
         return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+    @router.post("", response_model=out_schema, status_code=status.HTTP_201_CREATED)
+    def create_item(body: create_schema, db: DbSession, user: AdminUser, request: Request):
+        """Admin: submit a request from the portal for a PSP. That PSP's login then reviews it as usual."""
+        psp = db.scalar(select(Psp).where(Psp.psp_code == body.psp_code))
+        if psp is None:
+            raise AppError(ErrorCode.PSP_NOT_FOUND, f"PSP {body.psp_code} not found")
+        ensure_psp_can_accept(psp, body.currency, getattr(body, account_field) if account_field else None)
+
+        data = body.model_dump(exclude={"psp_code"})
+        if "screenshot_url" in data:
+            data["screenshot_url"] = str(data["screenshot_url"])
+        tx, _ = create_transaction(db, model, psp, data)
+        audit(db, f"{kind}.submitted", actor_type="user", actor_id=user.id, target=tx.public_id,
+              details={"psp_code": psp.psp_code, "source": "admin_portal"}, request=request)
+        return tx
 
     @router.get("/{public_id}", response_model=out_schema)
     def get_item(public_id: str, db: DbSession, user: CurrentUser):

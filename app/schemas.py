@@ -32,6 +32,17 @@ class TokenResponse(BaseModel):
     expires_in_minutes: int
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=10, max_length=72)
+
+    @model_validator(mode="after")
+    def new_password_differs(self):
+        if self.new_password == self.current_password:
+            raise ValueError("new_password must be different from current_password")
+        return self
+
+
 class UserCreate(BaseModel):
     """Create another admin, or an extra login for an existing PSP."""
 
@@ -193,38 +204,46 @@ class SignedRequest(BaseModel):
     signature: str | None = Field(default=None, description="MD5 signature, see README")
 
 
-class DepositCreate(SignedRequest):
+class DepositFields(BaseModel):
     customer_name: str = Field(min_length=1, max_length=200)
     customer_email: EmailStr
     amount: Amount
     currency: Currency
-    bank_account_id: str = Field(min_length=1, max_length=50)
     screenshot_url: HttpUrl
     utr_number: str | None = Field(default=None, max_length=100)
     comment: str | None = Field(default=None, max_length=2000)
-    idempotency_key: str | None = Field(default=None, max_length=100)
 
 
-class WithdrawalCreate(SignedRequest):
+class WithdrawalFields(BaseModel):
     customer_name: str = Field(min_length=1, max_length=200)
     customer_email: EmailStr
     amount: Amount
     currency: Currency
-    dest_bank_name: str = Field(min_length=1, max_length=200)
-    dest_account_number: str = Field(min_length=4, max_length=50, pattern=r"^[A-Za-z0-9]+$")
-    dest_ifsc: str
-    dest_account_name: str = Field(min_length=1, max_length=200)
     source_account_id: str = Field(min_length=1, max_length=50)
     comment: str | None = Field(default=None, max_length=2000)
-    idempotency_key: str | None = Field(default=None, max_length=100)
 
-    @field_validator("dest_ifsc")
+    @field_validator("dest_ifsc", check_fields=False)
     @classmethod
-    def check_ifsc_or_swift(cls, v: str) -> str:
+    def check_ifsc_or_swift(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
         v = v.strip().upper()
         if not (IFSC_RE.match(v) or SWIFT_RE.match(v)):
             raise ValueError("dest_ifsc must be a valid IFSC (11 chars) or SWIFT/BIC (8 or 11 chars) code")
         return v
+
+
+class DepositCreate(DepositFields, SignedRequest):
+    bank_account_id: str = Field(min_length=1, max_length=50)
+    idempotency_key: str | None = Field(default=None, max_length=100)
+
+
+class WithdrawalCreate(WithdrawalFields, SignedRequest):
+    dest_bank_name: str = Field(min_length=1, max_length=200)
+    dest_account_number: str = Field(min_length=4, max_length=50, pattern=r"^[A-Za-z0-9]+$")
+    dest_ifsc: str
+    dest_account_name: str = Field(min_length=1, max_length=200)
+    idempotency_key: str | None = Field(default=None, max_length=100)
 
 
 class DepositSubmitted(BaseModel):
@@ -273,6 +292,22 @@ class RejectRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=2000, description="Always sent to the CRM in the callback")
 
 
+class AdminDepositCreate(DepositFields):
+    """Admin submits a deposit from the portal on behalf of a PSP (no CRM signature)."""
+
+    psp_code: str = Field(description="PSP that will review this deposit")
+
+
+class AdminWithdrawalCreate(WithdrawalFields):
+    """Admin submits a withdrawal from the portal on behalf of a PSP (no CRM signature)."""
+
+    psp_code: str = Field(description="PSP that will review this withdrawal")
+    dest_bank_name: str | None = Field(default=None, min_length=1, max_length=200)
+    dest_account_number: str | None = Field(default=None, min_length=4, max_length=50, pattern=r"^[A-Za-z0-9]+$")
+    dest_ifsc: str | None = None
+    dest_account_name: str | None = Field(default=None, min_length=1, max_length=200)
+
+
 class TransactionOutBase(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -283,7 +318,6 @@ class TransactionOutBase(BaseModel):
     amount: Decimal
     currency: str
     comment: str | None
-    idempotency_key: str | None
     status: TxStatus
     review_comment: str | None
     reviewed_by: str | None
@@ -297,16 +331,17 @@ class TransactionOutBase(BaseModel):
 
 
 class DepositOut(TransactionOutBase):
-    bank_account_id: str
+    bank_account_id: str | None  # empty for deposits submitted by an admin
     screenshot_url: str
     utr_number: str | None
 
 
 class WithdrawalOut(TransactionOutBase):
-    dest_bank_name: str
-    dest_account_number: str
-    dest_ifsc: str
-    dest_account_name: str
+    # destination details may be empty on withdrawals submitted by an admin
+    dest_bank_name: str | None
+    dest_account_number: str | None
+    dest_ifsc: str | None
+    dest_account_name: str | None
     source_account_id: str
 
 

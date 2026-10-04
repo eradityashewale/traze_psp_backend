@@ -41,6 +41,7 @@ class ErrorCode(Enum):
     USER_ALREADY_EXISTS = ("E4001", 409, "A user with this email already exists")
     USER_NOT_FOUND = ("E4002", 404, "User not found")
     USER_SELF_CHANGE = ("E4003", 400, "You cannot deactivate or demote yourself")
+    PASSWORD_INCORRECT = ("E4004", 400, "Current password is incorrect")
     NOT_FOUND = ("E4040", 404, "Resource not found")
     METHOD_NOT_ALLOWED = ("E4050", 405, "Method not allowed")
     INTERNAL_ERROR = ("E5000", 500, "Internal server error")

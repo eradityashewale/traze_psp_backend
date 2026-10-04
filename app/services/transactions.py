@@ -14,7 +14,7 @@ from app.services.callback import schedule_callback
 Transaction = Deposit | Withdrawal
 
 
-def ensure_psp_can_accept(psp: Psp, currency: str, bank_account_id: str) -> None:
+def ensure_psp_can_accept(psp: Psp, currency: str, bank_account_id: str | None) -> None:
     if psp.status != PspStatus.active:
         raise AppError(ErrorCode.PSP_INACTIVE)
     if currency not in psp.allowed_currencies:
@@ -22,7 +22,7 @@ def ensure_psp_can_accept(psp: Psp, currency: str, bank_account_id: str) -> None
             ErrorCode.CURRENCY_NOT_ALLOWED,
             f"Currency {currency} is not allowed for this PSP (allowed: {', '.join(psp.allowed_currencies)})",
         )
-    if bank_account_id not in psp.bank_accounts:
+    if bank_account_id is not None and bank_account_id not in psp.bank_accounts:
         raise AppError(ErrorCode.BANK_ACCOUNT_NOT_ALLOWED, f"Bank account {bank_account_id} is not managed by this PSP")
 
 

@@ -160,7 +160,7 @@ class Deposit(TransactionMixin, Base):
     __table_args__ = (UniqueConstraint("psp_id", "idempotency_key", name="uq_deposit_idempotency"),)
     PREFIX = "DEP"
 
-    bank_account_id: Mapped[str] = mapped_column(String(50))
+    bank_account_id: Mapped[str | None] = mapped_column(String(50))  # not set on admin-submitted deposits
     screenshot_url: Mapped[str] = mapped_column(String(1000))
     utr_number: Mapped[str | None] = mapped_column(String(100), index=True)
 
@@ -173,10 +173,11 @@ class Withdrawal(TransactionMixin, Base):
     __table_args__ = (UniqueConstraint("psp_id", "idempotency_key", name="uq_withdrawal_idempotency"),)
     PREFIX = "WDL"
 
-    dest_bank_name: Mapped[str] = mapped_column(String(200))
-    dest_account_number: Mapped[str] = mapped_column(String(50))
-    dest_ifsc: Mapped[str] = mapped_column(String(11))
-    dest_account_name: Mapped[str] = mapped_column(String(200))
+    # destination details are optional on admin-submitted withdrawals
+    dest_bank_name: Mapped[str | None] = mapped_column(String(200))
+    dest_account_number: Mapped[str | None] = mapped_column(String(50))
+    dest_ifsc: Mapped[str | None] = mapped_column(String(11))
+    dest_account_name: Mapped[str | None] = mapped_column(String(200))
     source_account_id: Mapped[str] = mapped_column(String(50))
 
     psp: Mapped[Psp | None] = relationship(lazy="selectin")
