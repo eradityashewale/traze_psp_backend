@@ -5,7 +5,6 @@ from typing import Any
 
 from fastapi import UploadFile
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.errors import AppError, ErrorCode
@@ -40,43 +39,22 @@ def create_transaction(
     data: dict[str, Any],
     created_by: CreatedBy,
     screenshot: UploadFile | None = None,
-) -> tuple[Transaction, bool]:
-    """Insert a new pending transaction. Returns (tx, created).
+) -> Transaction:
+    """Insert a new pending transaction.
 
     created_by records who submitted it: the CRM through the API, or an admin from the portal.
-
-    If the idempotency_key was already used by this PSP, the existing record is
-    returned with created=False instead of inserting a duplicate.
     An attached screenshot is stored in S3 and its key saved as screenshot_url.
     """
-    key = data.get("idempotency_key")
-    if key:
-        existing = _find_by_idempotency_key(db, model, psp.id, key)
-        if existing:
-            return existing, False
-
     if screenshot is not None:
         folder = "deposit" if model is Deposit else "withdrawal"
         data = {**data, "screenshot_url": upload_screenshot(screenshot, folder)}
     tx = model(**data, psp_id=psp.id, status=TxStatus.pending, created_by=created_by)
     db.add(tx)
-    try:
-        db.flush()
-        tx.public_id = f"{model.PREFIX}-{tx.id:05d}"
-        db.commit()
-    except IntegrityError:
-        # Two identical requests raced each other; the other one won.
-        db.rollback()
-        existing = _find_by_idempotency_key(db, model, psp.id, key) if key else None
-        if existing is None:
-            raise
-        return existing, False
+    db.flush()
+    tx.public_id = f"{model.PREFIX}-{tx.id:05d}"
+    db.commit()
     db.refresh(tx)
-    return tx, True
-
-
-def _find_by_idempotency_key(db: Session, model: type[Transaction], psp_id: int, key: str):
-    return db.scalar(select(model).where(model.psp_id == psp_id, model.idempotency_key == key))
+    return tx
 
 
 def get_for_psp(db: Session, model: type[Transaction], psp: Psp, public_id: str) -> Transaction:

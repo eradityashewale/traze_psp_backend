@@ -1,9 +1,8 @@
 """Deposit module (guide Sections 5 and 8)."""
 
-import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Form, Request, Response, status
+from fastapi import APIRouter, Form, Request, status
 
 from app.deps import CallingPsp, DbSession, VerifiedPsp
 from app.models import CreatedBy, Deposit
@@ -22,7 +21,6 @@ def submit_deposit(
     body: Annotated[DepositCreate, Form(media_type="multipart/form-data")],
     db: DbSession,
     psp: VerifiedPsp,
-    response: Response,
     request: Request,
 ):
     verify_request_signature(
@@ -37,16 +35,12 @@ def submit_deposit(
     ensure_psp_can_accept(psp, body.bank_account_id)
 
     data = body.model_dump(exclude={"signature", "screenshot"})
-    data["idempotency_key"] = data["idempotency_key"] or uuid.uuid4().hex
-    tx, created = create_transaction(db, Deposit, psp, data, CreatedBy.crm, body.screenshot)
-    if created:
-        audit(db, "deposit.submitted", actor_type="psp", actor_id=psp.psp_code, target=tx.public_id, request=request)
-    else:
-        response.status_code = status.HTTP_200_OK
+    tx = create_transaction(db, Deposit, psp, data, CreatedBy.crm, body.screenshot)
+    audit(db, "deposit.submitted", actor_type="psp", actor_id=psp.psp_code, target=tx.public_id, request=request)
     return DepositSubmitted(
         deposit_id=tx.public_id,
         status=tx.status,
-        message="Deposit received and queued for review" if created else "Duplicate idempotency_key; returning existing deposit",
+        message="Deposit received and queued for review",
     )
 
 

@@ -122,7 +122,7 @@ Headers: `Authorization: Bearer <API_TOKEN>`, `X-API-Secret: <API_SECRET>`, plus
 | POST | `/api/v1/withdrawals` |
 | GET | `/api/v1/withdrawals/{withdrawal_id}` |
 
-A repeated `idempotency_key` returns the existing record with `200`; a new one returns `201`. On a deposit the key is optional: the portal generates one when it is not sent.
+Every accepted `POST` creates a new record and returns `201`. There is no `idempotency_key`: sending the same request twice creates two records.
 
 `INR` is the only currency. A deposit has no `currency` field (CRM API and portal) and is always stored as `INR`. On a withdrawal `currency` defaults to `INR` when it is not sent, and any other value is rejected with `E1000`. A PSP has no currency setting. CRM requests carry no `timestamp`; the portal records `created_at` itself when the request arrives.
 
@@ -132,7 +132,7 @@ A PSP login only ever sees and acts on its own PSP's requests. An admin sees all
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/api/v1/portal/deposits` | filters: `status, psp_code (admin only), currency, customer, callback_failed, date_from, date_to, limit, offset` |
-| POST | `/api/v1/portal/deposits` | admin: submit a request for a PSP. Same fields as the CRM API plus `psp_code`; no `signature` / `idempotency_key`, no `bank_account_id` on a deposit, and no `source_account_id` on a withdrawal (the PSP's `account_number` is used). Starts as `pending`, and that PSP's login or an admin reviews it. |
+| POST | `/api/v1/portal/deposits` | admin: submit a request for a PSP. Same fields as the CRM API plus `psp_code`; no `signature`, no `bank_account_id` on a deposit, and no `source_account_id` on a withdrawal (the PSP's `account_number` is used). Starts as `pending`, and that PSP's login or an admin reviews it. |
 | GET | `/api/v1/portal/deposits/{id}` | |
 | POST | `/api/v1/portal/deposits/{id}/processing` | admin or PSP login: claim a pending request |
 | POST | `/api/v1/portal/deposits/{id}/approve` | admin or PSP login: `{comment?}` → callback |
@@ -151,7 +151,6 @@ Deposits and withdrawals are submitted as **`multipart/form-data`** (not JSON), 
 * Accepted: PNG, JPEG, WEBP or PDF, up to `SCREENSHOT_MAX_MB` (5). The type is checked from the file's content.
 * Deposit: the `screenshot` file is required, on the CRM API and when an admin submits from the portal.
 * Withdrawal: the `screenshot` file is optional.
-* A repeated `idempotency_key` does not upload the file again.
 
 ```bash
 curl -X POST https://<host>/api/v1/deposits \

@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Form, Request, Response, status
+from fastapi import APIRouter, Form, Request, status
 
 from app.deps import CallingPsp, DbSession, VerifiedPsp
 from app.models import CreatedBy, Withdrawal
@@ -27,7 +27,6 @@ def submit_withdrawal(
     body: Annotated[WithdrawalCreate, Form(media_type="multipart/form-data")],
     db: DbSession,
     psp: VerifiedPsp,
-    response: Response,
     request: Request,
 ):
     verify_request_signature(
@@ -44,15 +43,12 @@ def submit_withdrawal(
     ensure_psp_can_accept(psp, body.source_account_id)
 
     data = body.model_dump(exclude={"signature", "screenshot"})
-    tx, created = create_transaction(db, Withdrawal, psp, data, CreatedBy.crm, body.screenshot)
-    if created:
-        audit(db, "withdrawal.submitted", actor_type="psp", actor_id=psp.psp_code, target=tx.public_id, request=request)
-    else:
-        response.status_code = status.HTTP_200_OK
+    tx = create_transaction(db, Withdrawal, psp, data, CreatedBy.crm, body.screenshot)
+    audit(db, "withdrawal.submitted", actor_type="psp", actor_id=psp.psp_code, target=tx.public_id, request=request)
     return WithdrawalSubmitted(
         withdrawal_id=tx.public_id,
         status=tx.status,
-        message="Withdrawal received and queued for review" if created else "Duplicate idempotency_key; returning existing withdrawal",
+        message="Withdrawal received and queued for review",
     )
 
 
