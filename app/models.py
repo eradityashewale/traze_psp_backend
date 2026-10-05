@@ -42,6 +42,16 @@ class CreatedBy(str, enum.Enum):
     crm = "crm"  # submitted by the CRM through the API
 
 
+class TxKind(str, enum.Enum):
+    deposit = "deposit"
+    withdrawal = "withdrawal"
+
+
+class ChatStatus(str, enum.Enum):
+    open = "open"
+    closed = "closed"  # settled; no new messages until an admin reopens it
+
+
 FINAL_STATUSES = {TxStatus.approved, TxStatus.rejected, TxStatus.reversed}
 OPEN_STATUSES = {TxStatus.pending, TxStatus.processing}
 
@@ -179,6 +189,59 @@ class Withdrawal(TransactionMixin, Base):
 
     psp: Mapped[Psp | None] = relationship(lazy="selectin")
     reviewer: Mapped[PortalUser | None] = relationship(lazy="selectin")
+
+
+class Chat(Base):
+    """The conversation about one deposit or withdrawal, between the admins and that PSP's logins.
+
+    A request has at most one chat. It is created by the first message and closed by an admin.
+    """
+
+    __tablename__ = "chats"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[TxKind] = mapped_column(_enum(TxKind, "tx_kind"))
+    # public_id of the deposit or withdrawal (DEP-... / WDL-...), so it is unique across both.
+    transaction_id: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    psp_id: Mapped[int | None] = mapped_column(ForeignKey("psps.id", ondelete="SET NULL"), index=True)
+    status: Mapped[ChatStatus] = mapped_column(_enum(ChatStatus, "chat_status"), default=ChatStatus.open, index=True)
+    opened_by_id: Mapped[int | None] = mapped_column(ForeignKey("portal_users.id", ondelete="SET NULL"))
+    closed_by_id: Mapped[int | None] = mapped_column(ForeignKey("portal_users.id", ondelete="SET NULL"))
+    closed_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    # Read markers are kept per side, not per login: the id of the last message that side has seen.
+    admin_last_read_id: Mapped[int] = mapped_column(Integer, default=0)
+    psp_last_read_id: Mapped[int] = mapped_column(Integer, default=0)
+    last_message_at: Mapped[datetime | None] = mapped_column(UTCDateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=now6())
+
+    psp: Mapped[Psp | None] = relationship(lazy="selectin")
+    opener: Mapped[PortalUser | None] = relationship(lazy="selectin", foreign_keys=[opened_by_id])
+    closer: Mapped[PortalUser | None] = relationship(lazy="selectin", foreign_keys=[closed_by_id])
+
+    @property
+    def psp_code(self) -> str | None:
+        return self.psp.psp_code if self.psp else None
+
+    @property
+    def opened_by(self) -> str | None:
+        return self.opener.full_name if self.opener else None
+
+    @property
+    def closed_by(self) -> str | None:
+        return self.closer.full_name if self.closer else None
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    chat_id: Mapped[int] = mapped_column(ForeignKey("chats.id", ondelete="CASCADE"), index=True)
+    sender_id: Mapped[int | None] = mapped_column(ForeignKey("portal_users.id", ondelete="SET NULL"))
+    # Name and role are copied in so the history stays readable after a login is removed.
+    sender_name: Mapped[str] = mapped_column(String(200))
+    sender_role: Mapped[UserRole] = mapped_column(_enum(UserRole, "user_role"))
+    message: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=now6())
 
 
 class AuditLog(Base):

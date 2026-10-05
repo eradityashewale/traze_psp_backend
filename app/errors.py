@@ -37,6 +37,8 @@ class ErrorCode(Enum):
     TX_ALREADY_FINAL = ("E3002", 409, "Transaction is already approved, rejected or reversed")
     TX_INVALID_TRANSITION = ("E3003", 409, "Status change not allowed")
     FILE_INVALID = ("E3004", 422, "Uploaded file is not an accepted screenshot")
+    CHAT_NOT_FOUND = ("E3005", 404, "This request has no chat yet")
+    CHAT_CLOSED = ("E3006", 409, "Chat is closed")
     USER_ALREADY_EXISTS =("E4001", 409, "A user with this email already exists")
     USER_NOT_FOUND = ("E4002", 404, "User not found")
     USER_SELF_CHANGE = ("E4003", 400, "You cannot deactivate or demote yourself")

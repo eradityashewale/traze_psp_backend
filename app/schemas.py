@@ -14,7 +14,7 @@ from pydantic import (
     model_validator,
 )
 
-from app.models import CreatedBy, PspStatus, TxStatus, UserRole
+from app.models import ChatStatus, CreatedBy, PspStatus, TxKind, TxStatus, UserRole
 from app.services.storage import view_url
 
 Currency = Literal["INR"]
@@ -344,6 +344,49 @@ class WithdrawalOut(TransactionOutBase):
     dest_ifsc: str | None
     dest_account_name: str | None
     source_account_id: str
+
+
+# ---------- portal (chat) ----------
+
+class ChatMessageCreate(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
+
+    @field_validator("message")
+    @classmethod
+    def not_blank(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("message cannot be blank")
+        return v
+
+
+class ChatMessageOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    sender_name: str
+    sender_role: UserRole
+    message: str
+    created_at: datetime
+
+
+class ChatSummaryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    transaction_id: str
+    kind: TxKind
+    psp_code: str | None
+    status: ChatStatus | None = None  # null = nobody has written yet
+    opened_by: str | None = None
+    closed_by: str | None = None
+    closed_at: datetime | None = None
+    created_at: datetime | None = None
+    last_message_at: datetime | None = None
+    unread_count: int = 0  # messages from the other side that your side has not opened
+
+
+class ChatOut(ChatSummaryOut):
+    messages: list[ChatMessageOut] = []
 
 
 T = TypeVar("T")

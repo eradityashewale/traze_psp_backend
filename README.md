@@ -61,6 +61,7 @@ Schema changes are managed with **Alembic**. Migration files live in `alembic/ve
 | `0012` | Drops `psps.client_public_key` (the CRM's key is a file set in `.env`) |
 | `0013` | Adds the `reversed` status to deposits and withdrawals |
 | `0014` | Adds `created_by` (`admin` or `crm`) to deposits and withdrawals; existing rows are filled in from the audit log |
+| `0015` | Adds `chats` and `chat_messages` (one chat per deposit or withdrawal) |
 
 By default the app runs `alembic upgrade head` when it starts (`RUN_MIGRATIONS_ON_STARTUP=true`), so a new migration is applied on the next start. Set it to `false` to apply migrations yourself.
 
@@ -143,6 +144,19 @@ A PSP login only ever sees and acts on its own PSP's requests. An admin sees all
 Status flow: `pending → processing → approved | rejected`, or `pending → approved | rejected` directly. An approved request can be reversed once (`approved → reversed`). Rejected and reversed are final. Rows are locked during a decision, so two logins cannot both decide the same request.
 
 Every deposit and withdrawal records who submitted it in `created_by`: `admin` when an admin submitted it from the portal, `crm` when it came through the CRM API. The portal responses include it.
+
+### Chat on a request (JWT)
+Each deposit or withdrawal can have one chat between the admins and that PSP's logins, e.g. when a request was approved but the customer has still not received the money. Any admin and any login of that PSP can write in it. A PSP login only reaches the chats of its own PSP's requests. Paths are the same for `deposits` and `withdrawals`:
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/v1/portal/chats` | inbox, latest activity first, with `unread_count`. Filters: `status (open\|closed), kind (deposit\|withdrawal), unread, limit, offset` |
+| GET | `/api/v1/portal/deposits/{id}/chat` | the chat and its messages, oldest first. `status` is `null` while nobody has written. `after_id` returns only newer messages (polling). Opening it marks the messages as read for your side. |
+| POST | `/api/v1/portal/deposits/{id}/chat/messages` | admin or PSP login: `{message}`. The first message opens the chat. |
+| POST | `/api/v1/portal/deposits/{id}/chat/close` | admin: close the chat once the issue is settled |
+| POST | `/api/v1/portal/deposits/{id}/chat/reopen` | admin: reopen a closed chat |
+
+A closed chat stays readable but refuses new messages with `E3006` until an admin reopens it. Read state is kept per side (admins / the PSP's logins), not per login. The chat does not change the request's status and is not sent to the CRM. Opening, closing and reopening are written to the audit log (`chat.opened`, `chat.closed`, `chat.reopened`).
 
 ### Screenshots (S3)
 
