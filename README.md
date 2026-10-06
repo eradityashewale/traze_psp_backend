@@ -156,12 +156,14 @@ The response holds `role`, `full_name`, `psp_code` / `psp_name` (`null` for an a
 
 - `deposits`, `withdrawals`: requests created in the last `days` days: `total`, `today`, `peak`, `low`, `avg` (per day) and a zero-filled daily `series`.
 - `pending_requests`: deposits and withdrawals now in `pending`.
+- `pending_deposits`, `pending_withdrawals`, `approved_deposits`, `approved_withdrawals`, `rejected_deposits`, `rejected_withdrawals`, `reversed_deposits`, `reversed_withdrawals`: requests now in that status, split by kind.
+- `total_psp_count`: number of PSPs, whatever their status. Always `1` for a PSP login.
 - `approval_rate`: approved share of all requests, in percent.
 - `activity`: `{date, deposits, withdrawals}` per day for the last `activity_days` days.
 - `requests_overview`: deposits and withdrawals together by current status (`pending, processing, approved, rejected, reversed, total`).
 - `recent_transactions`: the latest deposits and withdrawals mixed, newest first, each with `kind`.
 
-Days are UTC calendar days. `pending_requests`, `approval_rate` and `requests_overview` cover all requests, not only the period.
+Days are UTC calendar days. `pending_requests`, the per-status counts, `approval_rate` and `requests_overview` cover all requests, not only the period.
 
 ### Chat on a request (JWT)
 Each deposit or withdrawal can have one chat between the admins and that PSP's logins, e.g. when a request was approved but the customer has still not received the money. Any admin and any login of that PSP can write in it. A PSP login only reaches the chats of its own PSP's requests. Paths are the same for `deposits` and `withdrawals`:

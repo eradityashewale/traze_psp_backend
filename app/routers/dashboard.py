@@ -33,6 +33,13 @@ def _status_counts(db, model: type[Transaction], user: PortalUser) -> dict[TxSta
     return dict(rows)
 
 
+def _psp_count(db, user: PortalUser) -> int:
+    """Every PSP for an admin; a PSP login only ever sees its own."""
+    if user.role == UserRole.psp:
+        return 1
+    return db.scalar(select(func.count()).select_from(Psp))
+
+
 def _daily_counts(db, model: type[Transaction], user: PortalUser, first_day: date) -> dict[date, int]:
     day = func.date(model.created_at)
     query = select(day, func.count()).where(model.created_at >= _day_start(first_day)).group_by(day)
@@ -95,6 +102,7 @@ def dashboard(
 
     overview = {s.value: sum(by_status[kind].get(s, 0) for kind, _ in KINDS) for s in TxStatus}
     total = sum(overview.values())
+    deposits_by_status, withdrawals_by_status = by_status[TxKind.deposit], by_status[TxKind.withdrawal]
 
     return {
         "role": user.role,
@@ -104,6 +112,15 @@ def dashboard(
         "deposits": _request_card(daily[TxKind.deposit], all_days[-days:]),
         "withdrawals": _request_card(daily[TxKind.withdrawal], all_days[-days:]),
         "pending_requests": overview[TxStatus.pending.value],
+        "pending_deposits": deposits_by_status.get(TxStatus.pending, 0),
+        "pending_withdrawals": withdrawals_by_status.get(TxStatus.pending, 0),
+        "approved_deposits": deposits_by_status.get(TxStatus.approved, 0),
+        "approved_withdrawals": withdrawals_by_status.get(TxStatus.approved, 0),
+        "rejected_deposits": deposits_by_status.get(TxStatus.rejected, 0),
+        "rejected_withdrawals": withdrawals_by_status.get(TxStatus.rejected, 0),
+        "reversed_deposits": deposits_by_status.get(TxStatus.reversed, 0),
+        "reversed_withdrawals": withdrawals_by_status.get(TxStatus.reversed, 0),
+        "total_psp_count": _psp_count(db, user),
         "approval_rate": round(overview[TxStatus.approved.value] * 100 / total, 1) if total else 0,
         "activity": [
             {

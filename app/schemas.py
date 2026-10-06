@@ -445,6 +445,16 @@ class DashboardOut(BaseModel):
     deposits: RequestCard
     withdrawals: RequestCard
     pending_requests: int
+    # Requests by current status, split by kind (all requests, not only the period).
+    pending_deposits: int
+    pending_withdrawals: int
+    approved_deposits: int
+    approved_withdrawals: int
+    rejected_deposits: int
+    rejected_withdrawals: int
+    reversed_deposits: int
+    reversed_withdrawals: int
+    total_psp_count: int  # every PSP for an admin, 1 for a PSP login
     approval_rate: float  # approved share of all requests, in percent
     activity: list[ActivityPoint]
     requests_overview: RequestsOverview
