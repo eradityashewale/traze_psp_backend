@@ -145,6 +145,24 @@ Status flow: `pending → processing → approved | rejected`, or `pending → a
 
 Every deposit and withdrawal records who submitted it in `created_by`: `admin` when an admin submitted it from the portal, `crm` when it came through the CRM API. The portal responses include it.
 
+### Dashboard (JWT)
+One endpoint feeds the overview page for both roles. The token decides the scope: an admin gets the figures across every PSP, a PSP login gets them for its own PSP's requests only.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/v1/portal/dashboard` | `days` (default 30, request cards), `activity_days` (default 14, activity chart), `recent_limit` (default 10) |
+
+The response holds `role`, `full_name`, `psp_code` / `psp_name` (`null` for an admin), and one block per widget:
+
+- `deposits`, `withdrawals`: requests created in the last `days` days: `total`, `today`, `peak`, `low`, `avg` (per day) and a zero-filled daily `series`.
+- `pending_requests`: deposits and withdrawals now in `pending`.
+- `approval_rate`: approved share of all requests, in percent.
+- `activity`: `{date, deposits, withdrawals}` per day for the last `activity_days` days.
+- `requests_overview`: deposits and withdrawals together by current status (`pending, processing, approved, rejected, reversed, total`).
+- `recent_transactions`: the latest deposits and withdrawals mixed, newest first, each with `kind`.
+
+Days are UTC calendar days. `pending_requests`, `approval_rate` and `requests_overview` cover all requests, not only the period.
+
 ### Chat on a request (JWT)
 Each deposit or withdrawal can have one chat between the admins and that PSP's logins, e.g. when a request was approved but the customer has still not received the money. Any admin and any login of that PSP can write in it. A PSP login only reaches the chats of its own PSP's requests. Paths are the same for `deposits` and `withdrawals`:
 

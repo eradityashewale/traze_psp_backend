@@ -1,5 +1,5 @@
 import re
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated, Generic, Literal, TypeVar
 
@@ -387,6 +387,69 @@ class ChatSummaryOut(BaseModel):
 
 class ChatOut(ChatSummaryOut):
     messages: list[ChatMessageOut] = []
+
+
+# ---------- portal (dashboard) ----------
+
+class DailyCount(BaseModel):
+    date: date
+    count: int
+
+
+class RequestCard(BaseModel):
+    """The "Deposit requests" / "Withdrawal requests" card."""
+
+    period_days: int
+    total: int  # requests created in the period
+    today: int
+    peak: int  # busiest day in the period
+    low: int  # quietest day in the period
+    avg: float  # requests per day
+    series: list[DailyCount]  # one entry per day, oldest first, zero-filled
+
+
+class ActivityPoint(BaseModel):
+    date: date
+    deposits: int
+    withdrawals: int
+
+
+class RequestsOverview(BaseModel):
+    """Deposits and withdrawals together, by current status."""
+
+    pending: int
+    processing: int
+    approved: int
+    rejected: int
+    reversed: int
+    total: int
+
+
+class RecentTransaction(BaseModel):
+    id: str
+    kind: TxKind
+    psp_code: str | None
+    customer_name: str
+    customer_email: str
+    amount: Decimal
+    currency: str
+    status: TxStatus
+    created_at: datetime
+
+
+class DashboardOut(BaseModel):
+    role: UserRole  # admin = every PSP's requests, psp = only this login's PSP
+    full_name: str
+    psp_code: str | None  # null for an admin
+    psp_name: str | None
+    deposits: RequestCard
+    withdrawals: RequestCard
+    pending_requests: int
+    approval_rate: float  # approved share of all requests, in percent
+    activity: list[ActivityPoint]
+    requests_overview: RequestsOverview
+    recent_transactions: list[RecentTransaction]  # deposits and withdrawals mixed, newest first
+    generated_at: datetime
 
 
 T = TypeVar("T")
