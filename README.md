@@ -13,8 +13,8 @@ Small backend for the PSP Portal. The CRM submits deposits and withdrawals, the 
 | 2 | HTTPS/SSL | `ENFORCE_HTTPS=true` rejects plain HTTP with `E1008` and sends HSTS. Callback URLs must be `https://`. |
 | 3 | Request authentication | `Authorization: Bearer <API_TOKEN>` + `X-API-Secret` |
 | 4 | HTTP Basic auth for webhooks | `CRM_CALLBACK_USERNAME` / `CRM_CALLBACK_PASSWORD` are sent on every callback and are **required** in UAT and production |
-| 5 | Periodic token rotation | Tokens expire after `API_TOKEN_VALIDITY_DAYS` (90 = quarterly). Rotation keeps the old token valid for `ROTATION_GRACE_HOURS`. |
-| 6 | Salted hash of critical fields | MD5 signature on requests **and** callbacks |
+| 5 | Periodic token rotation | Tokens expire after `API_TOKEN_VALIDITY_DAYS` (90 = quarterly). Rotation keeps the old token valid for `ROTATION_GRACE_HOURS`. A leaked token can be revoked at once (`revoke-credentials`), and portal sessions can be signed out per login or per PSP (see **Revoking credentials and sessions**). |
+| 6 | Salted hash of critical fields | HMAC-SHA256 signature on requests **and** callbacks, with a timestamp and nonce against replay |
 | 7 | Public/private key | CRM signs request bodies with RSA (`X-Signature`). The portal signs callbacks with its own key (`GET /api/v1/meta/public-key`). |
 | 8 | Key length | RSA keys under `MIN_RSA_KEY_BITS` (2048) are rejected. TLS cert on the proxy: 2048+ bits. |
 | 9 | MFA | **Not implemented** (removed by decision). Portal login is password-only, with bcrypt hashing and a lockout after 5 failed attempts. |
@@ -62,6 +62,8 @@ Schema changes are managed with **Alembic**. Migration files live in `alembic/ve
 | `0013` | Adds the `reversed` status to deposits and withdrawals |
 | `0014` | Adds `created_by` (`admin` or `crm`) to deposits and withdrawals; existing rows are filled in from the audit log |
 | `0015` | Adds `chats` and `chat_messages` (one chat per deposit or withdrawal) |
+| `0016` | Adds `request_nonces` (nonces of signed CRM requests, kept for the replay window) |
+| `0017` | Adds `psps.credentials_revoked_at` and `portal_users.token_version` (credential and session revocation) |
 
 By default the app runs `alembic upgrade head` when it starts (`RUN_MIGRATIONS_ON_STARTUP=true`), so a new migration is applied on the next start. Set it to `false` to apply migrations yourself.
 
@@ -98,10 +100,12 @@ Creating a PSP also creates its portal login (`login_email`, `login_password`). 
 |---|---|---|
 | POST | `/api/v1/auth/login` | `{email, password}` → `access_token`, for admins and PSP logins. 5 wrong passwords lock the account for 15 minutes. |
 | GET | `/api/v1/auth/me` | |
-| POST | `/api/v1/auth/change-password` | `{current_password, new_password}` — change your own password. Same call for admins and PSP logins; the token decides whose it is. |
+| POST | `/api/v1/auth/logout` | sign out: every access token of this login stops working, on all devices |
+| POST | `/api/v1/auth/change-password` | `{current_password, new_password}` — change your own password. Same call for admins and PSP logins; the token decides whose it is. Signs out every session of the login and returns a new `access_token` to carry on with. |
 | GET | `/api/v1/users?psp_code=` | admin: list logins, optionally for one PSP |
 | POST | `/api/v1/users` | admin: create an admin (`role: admin`) or an extra PSP login (`role: psp`, `psp_code`) |
-| PATCH | `/api/v1/users/{id}` | admin: rename, deactivate, reset password, `unlock` |
+| PATCH | `/api/v1/users/{id}` | admin: rename, deactivate, reset password, `unlock`. A password reset or a deactivation also signs the login out. |
+| POST | `/api/v1/users/{id}/revoke-sessions` | admin: sign one login out everywhere |
 
 ### PSP management (admin)
 | Method | Path | Notes |
@@ -111,7 +115,16 @@ Creating a PSP also creates its portal login (`login_email`, `login_password`). 
 | GET | `/api/v1/psps/{psp_code}` | |
 | PUT | `/api/v1/psps/{psp_code}` | partial update: status, `ifsc_code`, `account_number`, `contact_email` |
 | POST | `/api/v1/psps/{psp_code}/rotate-credentials` | `{grace_hours?, rotate_salt?}` |
+| POST | `/api/v1/psps/{psp_code}/revoke-credentials` | `{previous_only?, revoke_sessions?}` — kill the API token and secret immediately |
+| POST | `/api/v1/psps/{psp_code}/revoke-sessions` | sign out every portal login of the PSP |
 | DELETE | `/api/v1/psps/{psp_code}` | refused while requests are pending or processing. Removes the PSP's logins; transaction history is kept. |
+
+#### Revoking credentials and sessions
+
+* **Planned rotation**: `rotate-credentials`. The old token and secret keep working for `grace_hours` (default `ROTATION_GRACE_HOURS`); `grace_hours: 0` cuts them off at once.
+* **Leaked API key**: `revoke-credentials`. The current and the previous token stop working immediately and the CRM gets `E1014` until `rotate-credentials` issues a new pair (there is no grace period after a revoke). Send `rotate_salt: true` on that rotation if the signature salt may have leaked too.
+* **Old key leaked during a grace period**: `revoke-credentials` with `previous_only: true` ends the grace period and keeps the current token.
+* **Portal sessions**: an access token carries the login's `token_version`, which is checked on every request. Logout, a password change or reset, a deactivation, `users/{id}/revoke-sessions` and `psps/{psp_code}/revoke-sessions` raise it, so every token issued before that is rejected with `E1015`. `revoke-credentials` does the same for the PSP's logins when `revoke_sessions: true` is sent.
 
 ### CRM API
 Headers: `Authorization: Bearer <API_TOKEN>`, `X-API-Secret: <API_SECRET>`, plus `X-Signature` on POSTs if `CRM_PUBLIC_KEY_PATH` is set.
@@ -125,7 +138,7 @@ Headers: `Authorization: Bearer <API_TOKEN>`, `X-API-Secret: <API_SECRET>`, plus
 
 Every accepted `POST` creates a new record and returns `201`. There is no `idempotency_key`: sending the same request twice creates two records.
 
-`INR` is the only currency. A deposit has no `currency` field (CRM API and portal) and is always stored as `INR`. On a withdrawal `currency` defaults to `INR` when it is not sent, and any other value is rejected with `E1000`. A PSP has no currency setting. CRM requests carry no `timestamp`; the portal records `created_at` itself when the request arrives.
+`INR` is the only currency. A deposit has no `currency` field (CRM API and portal) and is always stored as `INR`. On a withdrawal `currency` defaults to `INR` when it is not sent, and any other value is rejected with `E1000`. A PSP has no currency setting. The `timestamp` on a CRM request is only used for the signature check; the portal records `created_at` itself when the request arrives.
 
 ### Portal review (JWT)
 A PSP login only ever sees and acts on its own PSP's requests. An admin sees all of them, can submit new ones, and can approve or reject any of them. Paths are the same for `deposits` and `withdrawals`:
@@ -191,7 +204,8 @@ curl -X POST https://<host>/api/v1/deposits \
   -H "Authorization: Bearer <API_TOKEN>" -H "X-API-Secret: <API_SECRET>" \
   -F customer_name="Rahul Sharma" -F customer_email=rahul@example.com \
   -F amount=1200 -F bank_account_id=50100123456789 \
-  -F signature=<md5> \
+  -F timestamp=1791625500 -F nonce=<random, unique per request> \
+  -F signature=<hmac-sha256 hex> \
   -F screenshot=@receipt.png
 ```
 
@@ -224,33 +238,49 @@ The full list is at `GET /api/v1/meta/error-codes`.
 
 ## Request security (CRM → portal)
 
-### 1. MD5 signature (required)
-Every CRM `POST` includes a `signature`. No `timestamp` is sent.
+### 1. HMAC-SHA256 signature (required)
+Every CRM `POST` includes three form fields: `timestamp`, `nonce` and `signature`.
+
+* `timestamp`: Unix time in seconds (UTC) when the request was signed.
+* `nonce`: a random value that is new for every request, 16 to 64 characters of `A-Z a-z 0-9 _ -` (a UUID works).
+* `signature`: lowercase hex of
 
 ```
-signature = md5("k1=v1&k2=v2&...&salt=<SIGNATURE_SALT>")   # keys sorted alphabetically
+signature = HMAC-SHA256(key = <SIGNATURE_SALT>, message = "k1=v1&k2=v2&...")   # keys sorted alphabetically
 ```
 
 | Request | Signed fields |
 |---|---|
-| Deposit | `amount, bank_account_id, customer_email` |
-| Withdrawal | `amount, currency, customer_email, dest_account_number, source_account_id` |
+| Deposit | `amount, bank_account_id, customer_email, method, nonce, path, timestamp` |
+| Withdrawal | `amount, currency, customer_email, dest_account_number, method, nonce, path, source_account_id, timestamp` |
 
-Amounts are written without trailing zeros (`12500`, `999.5`).
+`method` is `POST`. `path` is the API path without host or proxy prefix: `/api/v1/deposits` or `/api/v1/withdrawals`. Amounts are written without trailing zeros (`12500`, `999.5`). Example message for a deposit:
+
+```
+amount=1200&bank_account_id=50100123456789&customer_email=rahul@example.com&method=POST&nonce=3f9c1e0a7b2d4c5e8f6a1b2c3d4e5f60&path=/api/v1/deposits&timestamp=1791625500
+```
+
+Replay protection:
+
+* The `timestamp` must be within `SIGNATURE_WINDOW_SECONDS` (300) of the server time, otherwise `E1012`. Keep the CRM clock in sync (NTP).
+* Each `nonce` is accepted once per PSP. Sending it again is rejected with `E1013`. A nonce is only used up when the request is accepted, so after any other error the CRM may retry; to be safe, sign every attempt with a new nonce and timestamp.
+* A missing `signature`, `timestamp` or `nonce` gives `E1004`; a wrong signature gives `E1005`.
+
+`SIGNATURE_SALT` is the HMAC key. Treat it like the API secret.
 
 ### 2. RSA signature (when `CRM_PUBLIC_KEY_PATH` is set)
 One CRM serves every PSP, so its public key is a PEM file on the server, pointed to by `CRM_PUBLIC_KEY_PATH` in `.env`. It is not part of a PSP. Leave it empty to skip this check.
 
 The CRM signs the **exact raw request body** (the multipart bytes as sent, boundaries and file included) with its private key: RSA PKCS#1 v1.5 + SHA-256, base64-encoded in the `X-Signature` header. Keys must be RSA with at least 2048 bits.
 
-To get the MD5 `signature` by hand: `python scripts/sign_request.py deposit body.json <salt>`, then send the printed values as form fields.
+To get the `signature` by hand: `python scripts/sign_request.py deposit body.json <salt>`, then send the printed values (including `timestamp` and `nonce`) as form fields.
 
 ## Callbacks (portal → CRM)
 
 One CRM serves every PSP, so its callback endpoint is set once in `.env` (`CRM_CALLBACK_URL`, `CRM_CALLBACK_USERNAME`, `CRM_CALLBACK_PASSWORD`) and is not part of a PSP. After each approve, reject or reverse, the portal `POST`s to `CRM_CALLBACK_URL` with:
 * HTTP Basic auth (`CRM_CALLBACK_USERNAME` / `CRM_CALLBACK_PASSWORD`)
 * `X-Signature`: RSA-SHA256 of the raw body, signed with the portal key. Verify it with `/api/v1/meta/public-key`.
-* A `signature` field in the body: MD5 over `amount, currency, customer_email, <deposit_id|withdrawal_id>, status, timestamp` plus the salt.
+* A `signature` field in the body: HMAC-SHA256 (same construction as for requests, keyed with the salt) over `amount, currency, customer_email, <deposit_id|withdrawal_id>, nonce, status, timestamp`. The CRM should reject a callback whose `timestamp` is too old or whose `nonce` it has already seen. Each delivery attempt carries a new `timestamp` and `nonce`.
 
 ```json
 {
@@ -263,7 +293,8 @@ One CRM serves every PSP, so its callback endpoint is set once in `.env` (`CRM_C
   "reviewed_by": "Priya Desai",
   "comment": "UTR and screenshot verified",
   "signature": "…",
-  "timestamp": "2026-09-25T09:45:00Z"
+  "timestamp": "2026-09-25T09:45:00Z",
+  "nonce": "3f9c1e0a7b2d4c5e8f6a1b2c3d4e5f60"
 }
 ```
 

@@ -53,8 +53,10 @@ class Settings(BaseSettings):
     api_token_validity_days: int = 90  # quarterly rotation
     rotation_grace_hours: int = 72  # old token keeps working this long after a rotation
 
-    # --- MD5 signature (checklist 6) ---
+    # --- HMAC-SHA256 signature (checklist 6) ---
     require_signature: bool = True
+    # A signed request is accepted while its timestamp is within this many seconds of the server time.
+    signature_window_seconds: int = 300
 
     # --- public / private key (checklist 7) ---
     portal_private_key_path: str = "keys/portal_private_key.pem"

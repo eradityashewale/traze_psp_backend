@@ -44,6 +44,13 @@ class TokenResponse(BaseModel):
     expires_in_minutes: int
 
 
+class PasswordChanged(TokenResponse):
+    """Changing the password signs out every other session; this token replaces the one just used."""
+
+    success: bool = True
+    message: str = "Password changed"
+
+
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str = Field(min_length=10, max_length=72)
@@ -148,6 +155,7 @@ class PspOut(BaseModel):
     contact_email: str | None
     api_token_expires_at: datetime
     credentials_rotated_at: datetime | None
+    credentials_revoked_at: datetime | None
     prev_valid_until: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -157,7 +165,15 @@ class RotateRequest(BaseModel):
     grace_hours: int | None = Field(
         default=None, ge=0, le=720, description="How long the old token keeps working (default from config)"
     )
-    rotate_salt: bool = Field(default=False, description="Also issue a new MD5 signature salt")
+    rotate_salt: bool = Field(default=False, description="Also issue a new signature salt (HMAC key)")
+
+
+class RevokeRequest(BaseModel):
+    previous_only: bool = Field(
+        default=False,
+        description="true only ends the rotation grace period (kills the old token, keeps the current one)",
+    )
+    revoke_sessions: bool = Field(default=False, description="Also sign out every portal login of this PSP")
 
 
 class PspCredentials(BaseModel):
@@ -223,21 +239,36 @@ class WithdrawalFields(ScreenshotForm):
         return v
 
 
-class DepositCreate(DepositFields):
-    """CRM deposit: always INR, the screenshot file travels with the request, signed without a timestamp."""
+class SignedRequest(BaseModel):
+    """Signing fields of a CRM request. Optional here; enforced when REQUIRE_SIGNATURE is on."""
+
+    signature: str | None = Field(default=None, description="HMAC-SHA256 signature (hex), see README")
+    timestamp: int | None = Field(default=None, ge=0, description="Unix time in seconds (UTC) when the request was signed")
+    nonce: str | None = Field(
+        default=None,
+        min_length=16,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]+$",
+        description="Random value, unique per request (e.g. a UUID)",
+    )
+
+
+SIGNING_FIELDS = set(SignedRequest.model_fields)
+
+
+class DepositCreate(DepositFields, SignedRequest):
+    """CRM deposit: always INR, the screenshot file travels with the request."""
 
     screenshot: UploadFile = Field(description="Screenshot file (PNG, JPEG, WEBP or PDF). Stored in S3.")
     bank_account_id: str = Field(min_length=1, max_length=50)
-    signature: str | None = Field(default=None, description="MD5 signature, see README")
 
 
-class WithdrawalCreate(WithdrawalFields):
+class WithdrawalCreate(WithdrawalFields, SignedRequest):
     source_account_id: str = Field(min_length=1, max_length=50)
     dest_bank_name: str = Field(min_length=1, max_length=200)
     dest_account_number: str = Field(min_length=4, max_length=50, pattern=r"^[A-Za-z0-9]+$")
     dest_ifsc: str
     dest_account_name: str = Field(min_length=1, max_length=200)
-    signature: str | None = Field(default=None, description="MD5 signature, see README")
 
 
 class DepositSubmitted(BaseModel):

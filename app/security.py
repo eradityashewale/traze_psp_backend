@@ -21,12 +21,13 @@ def verify_password(password: str, password_hash: str) -> bool:
     return bcrypt.checkpw(password.encode()[:72], password_hash.encode())
 
 
-def create_access_token(user_id: int, role: str) -> str:
+def create_access_token(user_id: int, role: str, token_version: int) -> str:
     settings = get_settings()
     now = datetime.now(timezone.utc)
     payload = {
         "sub": str(user_id),
         "role": role,
+        "ver": token_version,
         "iat": now,
         "exp": now + timedelta(minutes=settings.jwt_expires_minutes),
     }
@@ -48,7 +49,7 @@ def generate_psp_credentials() -> dict[str, str]:
     return {
         "api_token": "pspt_" + secrets.token_urlsafe(32),
         "api_secret": "psps_" + secrets.token_urlsafe(32),
-        "signature_salt": secrets.token_hex(16),
+        "signature_salt": secrets.token_hex(32),  # 256-bit HMAC key
     }
 
 
@@ -64,7 +65,7 @@ def constant_time_equals(a: str, b: str) -> bool:
     return hmac.compare_digest(a.encode(), b.encode())
 
 
-# ---------- MD5 signature (Section 10) ----------
+# ---------- HMAC-SHA256 signature (Section 10) ----------
 
 def format_signature_value(value: Any) -> str:
     """Canonical string form of a field value.
@@ -82,7 +83,6 @@ def format_signature_value(value: Any) -> str:
 
 
 def compute_signature(fields: dict[str, Any], salt: str) -> str:
-    """md5("k1=v1&k2=v2&...&salt=SALT") with keys sorted alphabetically."""
+    """hex(HMAC-SHA256(key=SALT, msg="k1=v1&k2=v2&...")) with keys sorted alphabetically."""
     raw = "&".join(f"{k}={format_signature_value(fields[k])}" for k in sorted(fields))
-    raw += "&salt=" + salt
-    return hashlib.md5(raw.encode()).hexdigest()
+    return hmac.new(salt.encode(), raw.encode(), hashlib.sha256).hexdigest()

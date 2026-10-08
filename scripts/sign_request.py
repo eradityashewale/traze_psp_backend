@@ -1,8 +1,11 @@
-"""Add the MD5 signature (and optionally an RSA X-Signature) to a request body.
+"""Add the HMAC-SHA256 signature (and optionally an RSA X-Signature) to a request body.
 
 Usage:
     python scripts/sign_request.py deposit    body.json SALT [crm_private_key.pem]
     python scripts/sign_request.py withdrawal body.json SALT [crm_private_key.pem]
+
+A fresh `timestamp` and `nonce` are added and signed together with the request fields,
+so the output is valid for SIGNATURE_WINDOW_SECONDS and can be sent only once.
 
 Prints the signed JSON body to stdout. With a private key, the X-Signature header
 value for exactly those bytes is printed to stderr. Send the body byte-for-byte as printed.
@@ -10,7 +13,9 @@ value for exactly those bytes is printed to stderr. Send the body byte-for-byte 
 
 import base64
 import json
+import secrets
 import sys
+import time
 from decimal import Decimal
 from pathlib import Path
 
@@ -25,6 +30,7 @@ SIGNED_FIELDS = {
     "deposit": ["amount", "bank_account_id", "customer_email"],
     "withdrawal": ["amount", "currency", "customer_email", "dest_account_number", "source_account_id"],
 }
+PATHS = {"deposit": "/api/v1/deposits", "withdrawal": "/api/v1/withdrawals"}
 
 
 def main() -> None:
@@ -32,7 +38,12 @@ def main() -> None:
         sys.exit(__doc__)
     kind, path, salt = sys.argv[1:4]
     body = json.loads(Path(path).read_text(), parse_float=Decimal)
-    fields = {k: body[k] for k in SIGNED_FIELDS[kind]}
+    if kind == "withdrawal":
+        body.setdefault("currency", "INR")
+    body["timestamp"] = int(time.time())
+    body["nonce"] = secrets.token_hex(16)
+    fields = {k: body[k] for k in SIGNED_FIELDS[kind] + ["timestamp", "nonce"]}
+    fields.update(method="POST", path=PATHS[kind])
     body["signature"] = compute_signature(fields, salt)
     raw = json.dumps(body, default=lambda o: float(o) if isinstance(o, Decimal) else str(o))
     print(raw)

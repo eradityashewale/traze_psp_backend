@@ -9,8 +9,18 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.deps import AdminUser, DbSession
 from app.errors import AppError, ErrorCode
-from app.models import OPEN_STATUSES, Deposit, Psp, UserRole, Withdrawal
-from app.schemas import PspCreate, PspCreated, PspCredentials, PspList, PspOut, PspUpdate, RotateRequest, UserOut
+from app.models import OPEN_STATUSES, Deposit, PortalUser, Psp, UserRole, Withdrawal
+from app.schemas import (
+    PspCreate,
+    PspCreated,
+    PspCredentials,
+    PspList,
+    PspOut,
+    PspUpdate,
+    RevokeRequest,
+    RotateRequest,
+    UserOut,
+)
 from app.security import generate_psp_code, generate_psp_credentials, sha256_hex
 from app.services.audit import audit
 from app.services.users import new_portal_user
@@ -111,11 +121,14 @@ def rotate_credentials(
     """Issue a new API token and secret (quarterly rotation).
 
     The old pair keeps working for `grace_hours` so the CRM can switch without downtime.
-    The MD5 salt only changes when `rotate_salt` is true.
+    The signature salt only changes when `rotate_salt` is true.
     """
     body = body or RotateRequest()
     psp = _get_psp(db, psp_code)
     grace = body.grace_hours if body.grace_hours is not None else get_settings().rotation_grace_hours
+    if psp.credentials_revoked_at is not None:
+        grace = 0  # a revoked token must not come back as the "previous" one
+        psp.credentials_revoked_at = None
 
     psp.prev_api_token_hash = psp.api_token_hash if grace > 0 else None
     psp.prev_api_secret_hash = psp.api_secret_hash if grace > 0 else None
@@ -131,6 +144,47 @@ def rotate_credentials(
         api_token_expires_at=psp.api_token_expires_at,
         previous_token_valid_until=psp.prev_valid_until,
     )
+
+
+def _revoke_psp_sessions(db: Session, psp: Psp) -> int:
+    logins = db.scalars(select(PortalUser).where(PortalUser.psp_id == psp.id)).all()
+    for login in logins:
+        login.revoke_sessions()
+    return len(logins)
+
+
+@router.post("/{psp_code}/revoke-credentials", response_model=PspOut)
+def revoke_credentials(
+    psp_code: str, db: DbSession, admin: AdminUser, request: Request, body: RevokeRequest | None = None
+):
+    """Kill the API token and secret right away, with no grace period (use when a key has leaked).
+
+    The CRM gets `E1014` until new credentials are issued with `rotate-credentials`; pass
+    `rotate_salt: true` there if the signature salt may have leaked too.
+    `previous_only` only ends the grace period of the last rotation and keeps the current token.
+    """
+    body = body or RevokeRequest()
+    psp = _get_psp(db, psp_code)
+    psp.prev_api_token_hash = None
+    psp.prev_api_secret_hash = None
+    psp.prev_valid_until = None
+    if not body.previous_only:
+        psp.credentials_revoked_at = _now()
+    sessions = _revoke_psp_sessions(db, psp) if body.revoke_sessions else 0
+    audit(db, "psp.credentials_revoked", actor_type="user", actor_id=admin.id, target=psp.psp_code,
+          details={"previous_only": body.previous_only, "logins_signed_out": sessions}, request=request)
+    db.refresh(psp)
+    return psp
+
+
+@router.post("/{psp_code}/revoke-sessions")
+def revoke_sessions(psp_code: str, db: DbSession, admin: AdminUser, request: Request):
+    """Sign out every portal login of this PSP. API credentials are not touched."""
+    psp = _get_psp(db, psp_code)
+    count = _revoke_psp_sessions(db, psp)
+    audit(db, "psp.sessions_revoked", actor_type="user", actor_id=admin.id, target=psp.psp_code,
+          details={"logins_signed_out": count}, request=request)
+    return {"success": True, "message": f"{count} login(s) of {psp_code} signed out"}
 
 
 @router.delete("/{psp_code}")

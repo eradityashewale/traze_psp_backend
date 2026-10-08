@@ -76,6 +76,8 @@ class PortalUser(Base):
     failed_login_count: Mapped[int] = mapped_column(Integer, default=0)
     locked_until: Mapped[datetime | None] = mapped_column(UTCDateTime)
     last_login_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    # Copied into every access token; raising it signs out all of this login's sessions.
+    token_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=now6())
 
     psp: Mapped["Psp | None"] = relationship(lazy="selectin")
@@ -83,6 +85,9 @@ class PortalUser(Base):
     @property
     def psp_code(self) -> str | None:
         return self.psp.psp_code if self.psp else None
+
+    def revoke_sessions(self) -> None:
+        self.token_version += 1
 
 
 class Psp(Base):
@@ -101,8 +106,10 @@ class Psp(Base):
     prev_api_token_hash: Mapped[str | None] = mapped_column(BinaryString(64), index=True)
     prev_api_secret_hash: Mapped[str | None] = mapped_column(BinaryString(64))
     prev_valid_until: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    # Set when the credentials are revoked; the PSP has no working token until the next rotation.
+    credentials_revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 
-    # The salt has to be readable to compute MD5 signatures.
+    # The salt is the HMAC key, so it has to be readable to compute signatures.
     signature_salt: Mapped[str] = mapped_column(BinaryString(128))
 
 
@@ -114,6 +121,18 @@ class Psp(Base):
     updated_at: Mapped[datetime] = mapped_column(
         UTCDateTime, server_default=now6(), onupdate=now6()
     )
+
+
+class RequestNonce(Base):
+    """Nonces of signed CRM requests, kept until their timestamp expires, so a request cannot be replayed."""
+
+    __tablename__ = "request_nonces"
+    __table_args__ = (UniqueConstraint("psp_id", "nonce", name="uq_request_nonce"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    psp_id: Mapped[int] = mapped_column(ForeignKey("psps.id", ondelete="CASCADE"))
+    nonce: Mapped[str] = mapped_column(BinaryString(64))
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime, index=True)
 
 
 class TransactionMixin:

@@ -7,7 +7,15 @@ from app.config import get_settings
 from app.deps import AdminUser, CurrentUser, DbSession, ensure_psp_login_allowed
 from app.errors import AppError, ErrorCode
 from app.models import PortalUser, Psp
-from app.schemas import ChangePasswordRequest, LoginRequest,TokenResponse, UserCreate, UserOut, UserUpdate
+from app.schemas import (
+    ChangePasswordRequest,
+    LoginRequest,
+    PasswordChanged,
+    TokenResponse,
+    UserCreate,
+    UserOut,
+    UserUpdate,
+)
 from app.security import create_access_token, hash_password, verify_password
 from app.services.audit import audit
 from app.services.users import new_portal_user
@@ -19,13 +27,17 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _new_token(user: PortalUser) -> dict:
+    return {
+        "access_token": create_access_token(user.id, user.role.value, user.token_version),
+        "expires_in_minutes": get_settings().jwt_expires_minutes,
+    }
+
+
 def _token_for(db, user: PortalUser, request: Request) -> TokenResponse:
     user.last_login_at = _now()
     audit(db, "auth.login_success", actor_type="user", actor_id=user.id, request=request)
-    return TokenResponse(
-        access_token=create_access_token(user.id, user.role.value),
-        expires_in_minutes=get_settings().jwt_expires_minutes,
-    )
+    return TokenResponse(**_new_token(user))
 
 
 @router.post("/auth/login", response_model=TokenResponse)
@@ -62,15 +74,27 @@ def me(user: CurrentUser):
     return user
 
 
-@router.post("/auth/change-password")
+@router.post("/auth/logout")
+def logout(db: DbSession, user: CurrentUser, request: Request):
+    """Sign out. Every access token issued to this login stops working, on all devices."""
+    user.revoke_sessions()
+    audit(db, "auth.logout", actor_type="user", actor_id=user.id, request=request)
+    return {"success": True, "message": "Signed out"}
+
+
+@router.post("/auth/change-password", response_model=PasswordChanged)
 def change_password(body: ChangePasswordRequest, db: DbSession, user: CurrentUser, request: Request):
-    """Change your own password. Same call for admins and PSP logins; the token decides whose it is."""
+    """Change your own password. Same call for admins and PSP logins; the token decides whose it is.
+
+    Every existing session of this login is signed out. Keep using the `access_token` from the response.
+    """
     if not verify_password(body.current_password, user.password_hash):
         audit(db, "auth.password_change_failed", actor_type="user", actor_id=user.id, request=request)
         raise AppError(ErrorCode.PASSWORD_INCORRECT)
     user.password_hash = hash_password(body.new_password)
+    user.revoke_sessions()
     audit(db, "auth.password_changed", actor_type="user", actor_id=user.id, target=str(user.id), request=request)
-    return {"success": True, "message": "Password changed"}
+    return PasswordChanged(**_new_token(user))
 
 
 @router.get("/users", response_model=list[UserOut])
@@ -111,6 +135,10 @@ def update_user(user_id: int, body: UserUpdate, db: DbSession, admin: AdminUser,
     if changes.pop("unlock", None):
         user.locked_until = None
         user.failed_login_count = 0
+    # A password reset or a deactivation also ends the login's sessions, so re-activating
+    # it later does not bring old tokens back.
+    if "password" in changes or changes.get("is_active") is False:
+        user.revoke_sessions()
     if "password" in changes:
         user.password_hash = hash_password(changes.pop("password"))
         changes["password"] = "***"
@@ -121,3 +149,14 @@ def update_user(user_id: int, body: UserUpdate, db: DbSession, admin: AdminUser,
           details={k: (v.value if hasattr(v, "value") else v) for k, v in changes.items()}, request=request)
     db.refresh(user)
     return user
+
+
+@router.post("/users/{user_id}/revoke-sessions")
+def revoke_user_sessions(user_id: int, db: DbSession, admin: AdminUser, request: Request):
+    """Sign a login out everywhere. It can log in again with its password; deactivate it to block that."""
+    user = db.get(PortalUser, user_id)
+    if user is None:
+        raise AppError(ErrorCode.USER_NOT_FOUND)
+    user.revoke_sessions()
+    audit(db, "user.sessions_revoked", actor_type="user", actor_id=admin.id, target=str(user.id), request=request)
+    return {"success": True, "message": f"Sessions of {user.email} revoked"}

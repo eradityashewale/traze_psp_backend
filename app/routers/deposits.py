@@ -8,7 +8,14 @@ from app.deps import CallingPsp, DbSession, VerifiedPsp
 from app.models import CreatedBy, Deposit, TxKind
 from app.routers.chats import build_chat_router
 from app.routers.review import build_review_router
-from app.schemas import AdminDepositCreate, DepositCreate, DepositOut, DepositStatusOut, DepositSubmitted
+from app.schemas import (
+    SIGNING_FIELDS,
+    AdminDepositCreate,
+    DepositCreate,
+    DepositOut,
+    DepositStatusOut,
+    DepositSubmitted,
+)
 from app.services.audit import audit
 from app.services.signature import verify_request_signature
 from app.services.transactions import create_transaction, ensure_psp_can_accept, get_for_psp
@@ -26,17 +33,19 @@ def submit_deposit(
     request: Request,
 ):
     verify_request_signature(
+        db,
+        request,
         psp,
         {
             "amount": body.amount,
             "bank_account_id": body.bank_account_id,
             "customer_email": body.customer_email,
         },
-        body.signature,
+        body,
     )
     ensure_psp_can_accept(psp, body.bank_account_id)
 
-    data = body.model_dump(exclude={"signature", "screenshot"})
+    data = body.model_dump(exclude=SIGNING_FIELDS | {"screenshot"})
     tx = create_transaction(db, Deposit, psp, data, CreatedBy.crm, body.screenshot)
     audit(db, "deposit.submitted", actor_type="psp", actor_id=psp.psp_code, target=tx.public_id, request=request)
     return DepositSubmitted(

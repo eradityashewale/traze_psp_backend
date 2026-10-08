@@ -44,6 +44,9 @@ def get_current_user(
     user = db.get(PortalUser, int(payload["sub"]))
     if user is None or not user.is_active:
         raise AppError(ErrorCode.AUTH_INVALID, "User not found or inactive")
+    # Tokens issued before token_version existed carry no "ver" and count as version 0.
+    if payload.get("ver", 0) != user.token_version:
+        raise AppError(ErrorCode.SESSION_REVOKED)
     ensure_psp_login_allowed(user)
     return user
 
@@ -88,6 +91,8 @@ def get_calling_psp(
     if psp.api_token_hash == token_hash:
         if not constant_time_equals(psp.api_secret_hash, secret_hash):
             raise AppError(ErrorCode.AUTH_INVALID, "Invalid API credentials")
+        if psp.credentials_revoked_at is not None:
+            raise AppError(ErrorCode.API_TOKEN_REVOKED)
         if psp.api_token_expires_at <= now:
             raise AppError(ErrorCode.API_TOKEN_EXPIRED)
     else:

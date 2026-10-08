@@ -8,6 +8,7 @@ without sending the same callback twice, and nothing is lost on restart or failo
 
 import json
 import logging
+import secrets
 import threading
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -20,6 +21,7 @@ from app.database import SessionLocal
 from app.models import Deposit, Withdrawal
 from app.security import compute_signature
 from app.services.keys import sign_with_portal_key
+from app.services.signature import purge_expired_nonces
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +52,7 @@ def build_payload(tx: Transaction) -> dict:
     kind = _kind(tx)
     id_field = f"{kind}_id"
     timestamp = _now().strftime("%Y-%m-%dT%H:%M:%SZ")
+    nonce = secrets.token_hex(16)  # new on every attempt
     signed_fields = {
         id_field: tx.public_id,
         "status": tx.status.value,
@@ -57,6 +60,7 @@ def build_payload(tx: Transaction) -> dict:
         "currency": tx.currency,
         "customer_email": tx.customer_email,
         "timestamp": timestamp,
+        "nonce": nonce,
     }
     return {
         "event": f"{kind}.{tx.status.value}",
@@ -69,6 +73,7 @@ def build_payload(tx: Transaction) -> dict:
         "comment": tx.review_comment,
         "signature": compute_signature(signed_fields, tx.psp.signature_salt),
         "timestamp": timestamp,
+        "nonce": nonce,
     }
 
 
@@ -150,10 +155,17 @@ class CallbackWorker:
 
     def _run(self) -> None:
         interval = get_settings().callback_worker_interval_seconds
+        next_purge = _now()
         while not self._stop.is_set():
             for model in MODELS:
                 try:
                     deliver_due(model)
                 except Exception:  # keep the worker alive on DB hiccups
                     log.exception("Callback worker error")
+            if _now() >= next_purge:
+                try:
+                    purge_expired_nonces()
+                except Exception:
+                    log.exception("Nonce purge error")
+                next_purge = _now() + timedelta(minutes=5)
             self._stop.wait(interval)

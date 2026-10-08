@@ -9,6 +9,7 @@ from app.models import CreatedBy, TxKind, Withdrawal
 from app.routers.chats import build_chat_router
 from app.routers.review import build_review_router
 from app.schemas import (
+    SIGNING_FIELDS,
     AdminWithdrawalCreate,
     WithdrawalCreate,
     WithdrawalOut,
@@ -32,6 +33,8 @@ def submit_withdrawal(
     request: Request,
 ):
     verify_request_signature(
+        db,
+        request,
         psp,
         {
             "amount": body.amount,
@@ -40,11 +43,11 @@ def submit_withdrawal(
             "dest_account_number": body.dest_account_number,
             "source_account_id": body.source_account_id,
         },
-        body.signature,
+        body,
     )
     ensure_psp_can_accept(psp, body.source_account_id)
 
-    data = body.model_dump(exclude={"signature", "screenshot"})
+    data = body.model_dump(exclude=SIGNING_FIELDS | {"screenshot"})
     tx = create_transaction(db, Withdrawal, psp, data, CreatedBy.crm, body.screenshot)
     audit(db, "withdrawal.submitted", actor_type="psp", actor_id=psp.psp_code, target=tx.public_id, request=request)
     return WithdrawalSubmitted(
