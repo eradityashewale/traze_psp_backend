@@ -64,6 +64,7 @@ Schema changes are managed with **Alembic**. Migration files live in `alembic/ve
 | `0015` | Adds `chats` and `chat_messages` (one chat per deposit or withdrawal) |
 | `0016` | Adds `request_nonces` (nonces of signed CRM requests, kept for the replay window) |
 | `0017` | Adds `psps.credentials_revoked_at` and `portal_users.token_version` (credential and session revocation) |
+| `0018` | Adds `direct_messages` (the direct chat between the admins and a PSP, with attachments) |
 
 By default the app runs `alembic upgrade head` when it starts (`RUN_MIGRATIONS_ON_STARTUP=true`), so a new migration is applied on the next start. Set it to `false` to apply migrations yourself.
 
@@ -190,6 +191,24 @@ Each deposit or withdrawal can have one chat between the admins and that PSP's l
 | POST | `/api/v1/portal/deposits/{id}/chat/reopen` | admin: reopen a closed chat |
 
 A closed chat stays readable but refuses new messages with `E3006` until an admin reopens it. Read state is kept per side (admins / the PSP's logins), not per login. The chat does not change the request's status and is not sent to the CRM. Opening, closing and reopening are written to the audit log (`chat.opened`, `chat.closed`, `chat.reopened`).
+
+### Direct chat between admin and PSP (JWT)
+Apart from the chats on requests, each PSP has one direct thread with the admins, for anything that is not about a single deposit or withdrawal. Any admin can write to any PSP; a PSP login writes to the admins and only reaches its own PSP's thread. The thread is never closed.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/v1/portal/direct-chats` | inbox. Admin: one row per PSP, latest activity first, PSPs nobody has written to last. PSP login: its own thread. Each row has `unread_count` and `last_message`. Filters: `unread, limit, offset` |
+| GET | `/api/v1/portal/direct-chats/messages` | the thread's latest `limit` (100) messages, oldest first. Admin passes `psp_code`; a PSP login always gets its own. `after_id` returns only newer messages (polling), `before_id` older ones (history). Opening it marks the other side's messages as read. |
+| POST | `/api/v1/portal/direct-chats/messages` | **`multipart/form-data`**: `message` (text, up to 4000), `attachment` (file), or both. Admin also sends `psp_code`. |
+
+```bash
+curl -X POST "$BASE/api/v1/portal/direct-chats/messages" \
+  -H "Authorization: Bearer $JWT" \
+  -F psp_code=PSP001 -F message="Settlement sheet for last week" \
+  -F attachment=@/path/to/settlement.xlsx
+```
+
+The attachment can be any file type, up to `CHAT_ATTACHMENT_MAX_MB` (10). It is stored under `chat/<psp id>/` in the same private bucket, and a message returns it as `attachment_url` (a presigned link valid for `S3_URL_EXPIRES_SECONDS`), `attachment_name`, `attachment_content_type` and `attachment_size`. Images and PDFs open in the browser; every other type downloads under its original name. The instance's IAM role needs `s3:PutObject` and `s3:GetObject` on `arn:aws:s3:::<bucket>/chat/*` as well. Read state is kept per side, as in the request chats: `read_at` on a message is when the other side first opened it.
 
 ### Screenshots (S3)
 

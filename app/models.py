@@ -7,6 +7,7 @@ from sqlalchemy import (
     Boolean,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -260,6 +261,32 @@ class ChatMessage(Base):
     sender_name: Mapped[str] = mapped_column(String(200))
     sender_role: Mapped[UserRole] = mapped_column(_enum(UserRole, "user_role"))
     message: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=now6())
+
+
+class DirectMessage(Base):
+    """A message in the direct chat between the admins and one PSP's logins.
+
+    Each PSP has one such thread; it is not tied to a deposit or withdrawal and is never closed.
+    A message carries text, an attachment, or both.
+    """
+
+    __tablename__ = "direct_messages"
+    __table_args__ = (Index("ix_direct_messages_psp_id_id", "psp_id", "id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    psp_id: Mapped[int] = mapped_column(ForeignKey("psps.id", ondelete="CASCADE"))
+    sender_id: Mapped[int | None] = mapped_column(ForeignKey("portal_users.id", ondelete="SET NULL"))
+    # Name and role are copied in so the history stays readable after a login is removed.
+    sender_name: Mapped[str] = mapped_column(String(200))
+    sender_role: Mapped[UserRole] = mapped_column(_enum(UserRole, "user_role"))
+    message: Mapped[str | None] = mapped_column(Text)
+    attachment_key: Mapped[str | None] = mapped_column(String(1000))  # S3 key, when a file was attached
+    attachment_name: Mapped[str | None] = mapped_column(String(255))  # file name as uploaded
+    attachment_content_type: Mapped[str | None] = mapped_column(String(100))
+    attachment_size: Mapped[int | None] = mapped_column(Integer)  # bytes
+    # Read state is kept per side, not per login: set when the other side first opens the message.
+    read_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=now6())
 
 

@@ -15,12 +15,13 @@ from pydantic import (
 )
 
 from app.models import ChatStatus, CreatedBy, PspStatus, TxKind, TxStatus, UserRole
-from app.services.storage import view_url
+from app.services.storage import attachment_url, view_url
 
 Currency = Literal["INR"]
 Amount = Annotated[Decimal, Field(gt=0, max_digits=18, decimal_places=2)]
 # Stored S3 keys leave the API as short-lived presigned links.
 ScreenshotLink = Annotated[str, AfterValidator(view_url)]
+AttachmentLink = Annotated[str, AfterValidator(attachment_url)]
 
 IFSC_RE = re.compile(r"^[A-Z]{4}0[A-Z0-9]{6}$")
 SWIFT_RE = re.compile(r"^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$")
@@ -197,12 +198,8 @@ class PspList(BaseModel):
 
 # ---------- CRM-facing requests ----------
 
-class ScreenshotForm(BaseModel):
-    """Deposits and withdrawals are submitted as multipart/form-data so the screenshot travels with them."""
-
-    screenshot: UploadFile | None = Field(
-        default=None, description="Screenshot file (PNG, JPEG, WEBP or PDF). Stored in S3."
-    )
+class FormModel(BaseModel):
+    """Body of a multipart/form-data request."""
 
     @model_validator(mode="before")
     @classmethod
@@ -211,6 +208,14 @@ class ScreenshotForm(BaseModel):
         if isinstance(data, dict):
             return {k: v for k, v in data.items() if v != ""}
         return data
+
+
+class ScreenshotForm(FormModel):
+    """Deposits and withdrawals are submitted as multipart/form-data so the screenshot travels with them."""
+
+    screenshot: UploadFile | None = Field(
+        default=None, description="Screenshot file (PNG, JPEG, WEBP or PDF). Stored in S3."
+    )
 
 
 class DepositFields(ScreenshotForm):
@@ -418,6 +423,61 @@ class ChatSummaryOut(BaseModel):
 
 class ChatOut(ChatSummaryOut):
     messages: list[ChatMessageOut] = []
+
+
+# ---------- portal (direct chat) ----------
+
+class DirectMessageCreate(FormModel):
+    """Sent as multipart/form-data so the attachment travels with the message."""
+
+    psp_code: str | None = Field(
+        default=None, description="Admin: the PSP to write to. PSP logins always write to the admins."
+    )
+    message: str | None = Field(default=None, max_length=4000)
+    attachment: UploadFile | None = Field(default=None, description="Any file type. Stored in S3.")
+
+    @field_validator("message")
+    @classmethod
+    def blank_is_none(cls, v: str | None) -> str | None:
+        return (v.strip() or None) if v else None
+
+    @model_validator(mode="after")
+    def has_content(self):
+        # A browser form with no file chosen still sends an empty, nameless file part.
+        if self.attachment is not None and not self.attachment.filename:
+            self.attachment = None
+        if self.message is None and self.attachment is None:
+            raise ValueError("send a message, an attachment, or both")
+        return self
+
+
+class DirectMessageOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    sender_name: str
+    sender_role: UserRole
+    message: str | None  # null when only a file was sent
+    # The attachment fields are null when no file was sent. attachment_url is a short-lived link.
+    attachment_url: AttachmentLink | None = Field(validation_alias="attachment_key")
+    attachment_name: str | None
+    attachment_content_type: str | None
+    attachment_size: int | None  # bytes
+    read_at: datetime | None  # when the other side first opened it
+    created_at: datetime
+
+
+class DirectChatSummaryOut(BaseModel):
+    psp_code: str
+    psp_name: str
+    unread_count: int  # messages from the other side that your side has not opened
+    last_message: DirectMessageOut | None  # null = nobody has written yet
+
+
+class DirectChatOut(BaseModel):
+    psp_code: str
+    psp_name: str
+    messages: list[DirectMessageOut]
 
 
 # ---------- portal (dashboard) ----------

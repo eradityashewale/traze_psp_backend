@@ -12,7 +12,7 @@ from app.database import SessionLocal, ensure_database_exists
 from app.errors import ErrorCode, register_error_handlers
 from app.migrations import run_migrations
 from app.models import PortalUser, UserRole
-from app.routers import auth, chats, dashboard, deposits, meta, psps, withdrawals
+from app.routers import auth, chats, dashboard, deposits, direct_chats, meta, psps, withdrawals
 from app.security import hash_password
 from app.services.callback import CallbackWorker
 from app.services.keys import crm_public_key_pem, portal_private_key
@@ -125,3 +125,4 @@ app.include_router(dashboard.router)
 app.include_router(chats.router)
 app.include_router(deposits.chat_router)
 app.include_router(withdrawals.chat_router)
+app.include_router(direct_chats.router)

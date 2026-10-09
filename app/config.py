@@ -92,6 +92,7 @@ class Settings(BaseSettings):
     aws_secret_access_key: str | None = None
     s3_url_expires_seconds: int = 900  # lifetime of the view links in API responses
     screenshot_max_mb: int = 5
+    chat_attachment_max_mb: int = 10  # direct-chat attachments, any file type
 
     cors_origins: str = ""  # comma-separated
 

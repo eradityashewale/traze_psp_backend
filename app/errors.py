@@ -40,7 +40,7 @@ class ErrorCode(Enum):
     TX_NOT_FOUND = ("E3001", 404, "Transaction not found")
     TX_ALREADY_FINAL = ("E3002", 409, "Transaction is already approved, rejected or reversed")
     TX_INVALID_TRANSITION = ("E3003", 409, "Status change not allowed")
-    FILE_INVALID = ("E3004", 422, "Uploaded file is not an accepted screenshot")
+    FILE_INVALID = ("E3004", 422, "Uploaded file is not accepted")
     CHAT_NOT_FOUND = ("E3005", 404, "This request has no chat yet")
     CHAT_CLOSED = ("E3006", 409, "Chat is closed")
     USER_ALREADY_EXISTS =("E4001", 409, "A user with this email already exists")
@@ -51,7 +51,7 @@ class ErrorCode(Enum):
     METHOD_NOT_ALLOWED = ("E4050", 405, "Method not allowed")
     INTERNAL_ERROR = ("E5000", 500, "Internal server error")
     SERVICE_UNAVAILABLE = ("E5001", 503, "Service temporarily unavailable")
-    STORAGE_UNAVAILABLE = ("E5002", 503, "Screenshot storage is unavailable")
+    STORAGE_UNAVAILABLE = ("E5002", 503, "File storage is unavailable")
 
     @property
     def code(self) -> str:
