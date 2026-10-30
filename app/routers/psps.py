@@ -1,8 +1,9 @@
 """PSP Management module (guide Section 3). Admin only."""
 
 from datetime import datetime, timedelta, timezone
+from typing import Annotated
 
-from fastapi import APIRouter, Request, status
+from fastapi import APIRouter, File, Form, Request, UploadFile, status
 from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
@@ -23,6 +24,7 @@ from app.schemas import (
 )
 from app.security import generate_psp_code, generate_psp_credentials, sha256_hex
 from app.services.audit import audit
+from app.services.storage import delete_object, upload_qr_code
 from app.services.users import new_portal_user
 
 router = APIRouter(prefix="/api/v1/psps", tags=["PSP Management"])
@@ -63,13 +65,24 @@ def list_psps(db: DbSession, _: AdminUser):
 
 
 @router.post("", response_model=PspCreated, status_code=status.HTTP_201_CREATED)
-def create_psp(body: PspCreate, db: DbSession, admin: AdminUser, request: Request):
-    """Add a PSP together with its portal login (login_email / login_password).
+def create_psp(
+    body: Annotated[PspCreate, Form(media_type="multipart/form-data")],
+    db: DbSession,
+    admin: AdminUser,
+    request: Request,
+):
+    """Add a PSP with its bank details, optional payment QR code, and portal login (login_email / login_password).
 
-    The PSP logs in with that login to approve or reject its own deposits and withdrawals.
-    `psp_code` is generated here and returned in the response; it is not accepted in the body.
+    Sent as multipart/form-data. The PSP logs in with that login to approve or reject its own
+    deposits and withdrawals. `psp_code` is generated here and returned in the response; it is
+    not accepted in the body.
     """
-    psp = Psp(**body.model_dump(exclude={"login_email", "login_password"}), psp_code=_new_psp_code(db))
+    psp_code = _new_psp_code(db)
+    psp = Psp(
+        **body.model_dump(exclude={"login_email", "login_password", "qr_code"}),
+        psp_code=psp_code,
+        qr_code_key=upload_qr_code(body.qr_code, psp_code) if body.qr_code else None,
+    )
     creds = _issue_credentials(psp)
     db.add(psp)
     login = new_portal_user(
@@ -102,7 +115,8 @@ def get_psp(psp_code: str, db: DbSession, _: AdminUser):
 def update_psp(psp_code: str, body: PspUpdate, db: DbSession, admin: AdminUser, request: Request):
     psp = _get_psp(db, psp_code)
     changes = body.model_dump(exclude_unset=True)
-    for field in ("psp_name", "account_number", "status"):
+    required = ("psp_name", "bank_name", "account_name", "account_number", "ifsc_code", "branch", "status")
+    for field in required:
         if field in changes and changes[field] is None:
             raise AppError(ErrorCode.PSP_CONFIG_INVALID, f"{field} cannot be null")
 
@@ -110,6 +124,36 @@ def update_psp(psp_code: str, body: PspUpdate, db: DbSession, admin: AdminUser, 
         setattr(psp, field, value)
     audit(db, "psp.updated", actor_type="user", actor_id=admin.id, target=psp.psp_code,
           details={k: (v.value if hasattr(v, "value") else v) for k, v in changes.items()}, request=request)
+    db.refresh(psp)
+    return psp
+
+
+@router.put("/{psp_code}/qr-code", response_model=PspOut)
+def set_qr_code(
+    psp_code: str,
+    qr_code: Annotated[UploadFile, File(description="Payment QR code image (PNG, JPEG or WEBP)")],
+    db: DbSession,
+    admin: AdminUser,
+    request: Request,
+):
+    """Upload or replace the PSP's payment QR code (multipart/form-data, field `qr_code`)."""
+    psp = _get_psp(db, psp_code)
+    old_key = psp.qr_code_key
+    psp.qr_code_key = upload_qr_code(qr_code, psp.psp_code)
+    audit(db, "psp.qr_code_updated", actor_type="user", actor_id=admin.id, target=psp.psp_code, request=request)
+    db.flush()
+    delete_object(old_key)
+    db.refresh(psp)
+    return psp
+
+
+@router.delete("/{psp_code}/qr-code", response_model=PspOut)
+def remove_qr_code(psp_code: str, db: DbSession, admin: AdminUser, request: Request):
+    psp = _get_psp(db, psp_code)
+    old_key, psp.qr_code_key = psp.qr_code_key, None
+    audit(db, "psp.qr_code_removed", actor_type="user", actor_id=admin.id, target=psp.psp_code, request=request)
+    db.flush()
+    delete_object(old_key)
     db.refresh(psp)
     return psp
 
@@ -201,6 +245,9 @@ def delete_psp(psp_code: str, db: DbSession, admin: AdminUser, request: Request)
             ErrorCode.PSP_HAS_OPEN_TRANSACTIONS,
             "PSP has pending or processing deposits/withdrawals. Deactivate it and resolve them first.",
         )
+    qr_key = psp.qr_code_key
     db.delete(psp)  # its portal logins are removed by the FK cascade
     audit(db, "psp.deleted", actor_type="user", actor_id=admin.id, target=psp_code, request=request)
+    db.flush()
+    delete_object(qr_key)
     return {"success": True, "message": f"PSP {psp_code} deleted"}

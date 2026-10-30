@@ -38,6 +38,12 @@ class TxStatus(str, enum.Enum):
     reversed = "reversed"  # an approved request that was taken back; can happen once
 
 
+class PaymentMethod(str, enum.Enum):
+    imps = "imps"
+    rtgs = "rtgs"
+    upi = "upi"
+
+
 class CreatedBy(str, enum.Enum):
     admin = "admin"  # submitted by an admin from the portal
     crm = "crm"  # submitted by the CRM through the API
@@ -115,8 +121,13 @@ class Psp(Base):
 
 
     status: Mapped[PspStatus] = mapped_column(_enum(PspStatus, "psp_status"), default=PspStatus.active)
+    # The PSP's one bank account.
+    bank_name: Mapped[str | None] = mapped_column(String(200))
+    account_name: Mapped[str | None] = mapped_column(String(200))  # account holder name
+    account_number: Mapped[str | None] = mapped_column(String(34))
     ifsc_code: Mapped[str | None] = mapped_column(String(11))
-    account_number: Mapped[str | None] = mapped_column(String(34))  # the PSP's one bank account
+    branch: Mapped[str | None] = mapped_column(String(200))
+    qr_code_key: Mapped[str | None] = mapped_column(String(1000))  # S3 key of the payment QR image
     contact_email: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=now6())
     updated_at: Mapped[datetime] = mapped_column(
@@ -189,6 +200,8 @@ class Deposit(TransactionMixin, Base):
     bank_account_id: Mapped[str | None] = mapped_column(String(50))  # not set on admin-submitted deposits
     screenshot_url: Mapped[str] = mapped_column(String(1000))  # S3 key of the uploaded screenshot
     utr_number: Mapped[str | None] = mapped_column(String(100), index=True)
+    # How the customer paid. Empty on deposits made before the field existed.
+    payment_method: Mapped[PaymentMethod | None] = mapped_column(_enum(PaymentMethod, "payment_method"))
 
     psp: Mapped[Psp | None] = relationship(lazy="selectin")
     reviewer: Mapped[PortalUser | None] = relationship(lazy="selectin")

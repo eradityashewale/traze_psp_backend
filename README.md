@@ -65,6 +65,9 @@ Schema changes are managed with **Alembic**. Migration files live in `alembic/ve
 | `0016` | Adds `request_nonces` (nonces of signed CRM requests, kept for the replay window) |
 | `0017` | Adds `psps.credentials_revoked_at` and `portal_users.token_version` (credential and session revocation) |
 | `0018` | Adds `direct_messages` (the direct chat between the admins and a PSP, with attachments) |
+| `0019` | Adds the PSP's bank details (`bank_name`, `account_name`, `branch`, `account_type`) and `qr_code_key` (S3 key of its payment QR code) |
+| `0020` | Drops `psps.account_type` |
+| `0021` | Adds `deposits.payment_method` (`imps`, `rtgs` or `upi`) |
 
 By default the app runs `alembic upgrade head` when it starts (`RUN_MIGRATIONS_ON_STARTUP=true`), so a new migration is applied on the next start. Set it to `false` to apply migrations yourself.
 
@@ -112,9 +115,11 @@ Creating a PSP also creates its portal login (`login_email`, `login_password`). 
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/api/v1/psps` | list |
-| POST | `/api/v1/psps` | create the PSP **and its portal login** (`login_email`, `login_password`). `psp_code` is auto-generated (`PSP-XXXXXXXX`) and returned in the response; do not send it. A PSP has one bank account, given by `account_number` (required); the CRM sends that same number as `bank_account_id` on deposits and `source_account_id` on withdrawals. **The response shows `api_token`, `api_secret` and `signature_salt` once.** |
+| POST | `/api/v1/psps` | **multipart/form-data.** Create the PSP with its bank details (`bank_name`, `account_name`, `account_number`, `ifsc_code`, `branch`, all required), an optional payment QR code image (`qr_code`: PNG, JPEG or WEBP, stored in S3) **and its portal login** (`login_email`, `login_password`). `psp_code` is auto-generated (`PSP-XXXXXXXX`) and returned in the response; do not send it. A PSP has one bank account, given by `account_number` (required); the CRM sends that same number as `bank_account_id` on deposits and `source_account_id` on withdrawals. **The response shows `api_token`, `api_secret` and `signature_salt` once.** |
 | GET | `/api/v1/psps/{psp_code}` | |
-| PUT | `/api/v1/psps/{psp_code}` | partial update: status, `ifsc_code`, `account_number`, `contact_email` |
+| PUT | `/api/v1/psps/{psp_code}` | JSON partial update: status, bank details, `contact_email` |
+| PUT | `/api/v1/psps/{psp_code}/qr-code` | multipart/form-data, field `qr_code`: upload or replace the QR code. Responses show it as a short-lived `qr_code_url` |
+| DELETE | `/api/v1/psps/{psp_code}/qr-code` | remove the QR code |
 | POST | `/api/v1/psps/{psp_code}/rotate-credentials` | `{grace_hours?, rotate_salt?}` |
 | POST | `/api/v1/psps/{psp_code}/revoke-credentials` | `{previous_only?, revoke_sessions?}` — kill the API token and secret immediately |
 | POST | `/api/v1/psps/{psp_code}/revoke-sessions` | sign out every portal login of the PSP |
@@ -218,11 +223,13 @@ Deposits and withdrawals are submitted as **`multipart/form-data`** (not JSON), 
 * Deposit: the `screenshot` file is required, on the CRM API and when an admin submits from the portal.
 * Withdrawal: the `screenshot` file is optional.
 
+A deposit also needs `payment_method`: `imps`, `rtgs` or `upi` (any case), on the CRM API and when an admin submits from the portal. It is not part of the signature, and portal responses include it.
+
 ```bash
 curl -X POST https://<host>/api/v1/deposits \
   -H "Authorization: Bearer <API_TOKEN>" -H "X-API-Secret: <API_SECRET>" \
   -F customer_name="Rahul Sharma" -F customer_email=rahul@example.com \
-  -F amount=1200 -F bank_account_id=50100123456789 \
+  -F amount=1200 -F bank_account_id=50100123456789 -F payment_method=upi \
   -F timestamp=1791625500 -F nonce=<random, unique per request> \
   -F signature=<hmac-sha256 hex> \
   -F screenshot=@receipt.png

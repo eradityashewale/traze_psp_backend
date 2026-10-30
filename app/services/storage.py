@@ -25,6 +25,7 @@ KEY_PREFIX = "screenshots/"
 # screenshots/deposit/<id>.<ext> or screenshots/withdrawal/<id>.<ext>; older files sit directly under screenshots/.
 KEY_RE = re.compile(r"^screenshots/((deposit|withdrawal)/)?[0-9a-f]{32}\.(png|jpg|webp|pdf)$")
 ATTACHMENT_PREFIX = "chat/"  # chat/<psp id>/<id>.<ext>
+QR_PREFIX = "psp-qr/"  # psp-qr/<psp code>/<id>.<ext>
 
 
 def _sniff(data: bytes) -> tuple[str, str] | None:
@@ -85,6 +86,40 @@ def upload_screenshot(file: UploadFile, folder: str) -> str:
     return key
 
 
+def upload_qr_code(file: UploadFile, psp_code: str) -> str:
+    """Validate and store a PSP's payment QR code image (PNG, JPEG or WEBP). Returns the S3 object key."""
+    bucket = _bucket()
+    max_bytes = get_settings().screenshot_max_mb * 1024 * 1024
+    data = file.file.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise AppError(ErrorCode.FILE_INVALID, f"QR code is larger than {get_settings().screenshot_max_mb} MB")
+    kind = _sniff(data)
+    if kind is None or kind[0] == "pdf":
+        raise AppError(ErrorCode.FILE_INVALID, "QR code must be a PNG, JPEG or WEBP image")
+
+    ext, content_type = kind
+    key = f"{QR_PREFIX}{psp_code}/{uuid.uuid4().hex}.{ext}"
+    try:
+        _client().put_object(
+            Bucket=bucket, Key=key, Body=data, ContentType=content_type, ServerSideEncryption="AES256"
+        )
+    except (BotoCoreError, ClientError):
+        log.exception("S3 upload failed")
+        raise AppError(ErrorCode.STORAGE_UNAVAILABLE, "Could not store the QR code; try again")
+    return key
+
+
+def delete_object(key: str | None) -> None:
+    """Remove a stored file. Failures are only logged; a leftover object does no harm."""
+    s = get_settings()
+    if not key or not s.s3_bucket:
+        return
+    try:
+        _client().delete_object(Bucket=s.s3_bucket, Key=key)
+    except (BotoCoreError, ClientError):
+        log.exception("Could not delete %s", key)
+
+
 def upload_attachment(file: UploadFile, folder: str) -> dict:
     """Store a chat attachment of any file type. Returns its S3 key, file name, content type and size.
 
@@ -140,6 +175,11 @@ def view_url(value: str | None) -> str | None:
     if not value or not KEY_RE.match(value):
         return value
     return _presign(value)
+
+
+def qr_code_url(key: str | None) -> str | None:
+    """Presigned GET URL for a PSP's QR code image."""
+    return _presign(key) if key else None
 
 
 def attachment_url(key: str | None) -> str | None:

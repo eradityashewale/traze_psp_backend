@@ -14,8 +14,8 @@ from pydantic import (
     model_validator,
 )
 
-from app.models import ChatStatus, CreatedBy, PspStatus, TxKind, TxStatus, UserRole
-from app.services.storage import attachment_url, view_url
+from app.models import ChatStatus, CreatedBy, PaymentMethod, PspStatus, TxKind, TxStatus, UserRole
+from app.services.storage import attachment_url, qr_code_url as presign_qr_code, view_url
 
 Currency = Literal["INR"]
 Amount = Annotated[Decimal, Field(gt=0, max_digits=18, decimal_places=2)]
@@ -102,18 +102,39 @@ class UserOut(BaseModel):
     created_at: datetime
 
 
+# ---------- forms ----------
+
+class FormModel(BaseModel):
+    """Body of a multipart/form-data request."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_empty_fields(cls, data):
+        # Forms send optional fields that were left blank as "".
+        if isinstance(data, dict):
+            return {k: v for k, v in data.items() if v != ""}
+        return data
+
+
 # ---------- PSP management ----------
 
+ACCOUNT_NUMBER_HELP = (
+    "The PSP's one bank account number (digits/letters only, no spaces). Deposits (bank_account_id) "
+    "and withdrawals (source_account_id) must send this value."
+)
+
+
 class PspBase(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     psp_name: str | None = Field(default=None, min_length=1, max_length=200)
-    ifsc_code: str | None = None
+    bank_name: str | None = Field(default=None, min_length=1, max_length=200)
+    account_name: str | None = Field(default=None, min_length=1, max_length=200, description="Account holder name")
     account_number: str | None = Field(
-        default=None, min_length=6, max_length=34, pattern=r"^[A-Za-z0-9]+$",
-        description=(
-            "The PSP's one bank account number (digits/letters only, no spaces). Deposits (bank_account_id) "
-            "and withdrawals (source_account_id) must send this value."
-        ),
+        default=None, min_length=6, max_length=34, pattern=r"^[A-Za-z0-9]+$", description=ACCOUNT_NUMBER_HELP
     )
+    ifsc_code: str | None = None
+    branch: str | None = Field(default=None, min_length=1, max_length=200)
     contact_email: EmailStr | None = None
 
     @field_validator("ifsc_code")
@@ -126,21 +147,26 @@ class PspBase(BaseModel):
         return v
 
 
-class PspCreate(PspBase):
+class PspCreate(FormModel, PspBase):
+    """Sent as multipart/form-data so the QR code image can travel with it."""
+
     psp_name: str = Field(min_length=1, max_length=200)
+    bank_name: str = Field(min_length=1, max_length=200)
+    account_name: str = Field(min_length=1, max_length=200, description="Account holder name")
     account_number: str = Field(
-        min_length=6, max_length=34, pattern=r"^[A-Za-z0-9]+$",
-        description=(
-            "The PSP's one bank account number (digits/letters only, no spaces). Deposits (bank_account_id) "
-            "and withdrawals (source_account_id) must send this value."
-        ),
+        min_length=6, max_length=34, pattern=r"^[A-Za-z0-9]+$", description=ACCOUNT_NUMBER_HELP
+    )
+    ifsc_code: str
+    branch: str = Field(min_length=1, max_length=200)
+    qr_code: UploadFile | None = Field(
+        default=None, description="Payment QR code image (PNG, JPEG or WEBP). Stored in S3."
     )
     login_email: EmailStr = Field(description="Portal login for this PSP; it reviews its own requests")
     login_password: str = Field(min_length=10, max_length=72)
 
 
 class PspUpdate(PspBase):
-    """Only send fields you want to change — others stay as-is."""
+    """Only send fields you want to change — others stay as-is. The QR code has its own endpoint."""
 
     status: PspStatus | None = None
 
@@ -151,8 +177,14 @@ class PspOut(BaseModel):
     psp_code: str
     psp_name: str
     status: PspStatus
-    ifsc_code: str | None
+    bank_name: str | None
+    account_name: str | None
     account_number: str | None
+    ifsc_code: str | None
+    branch: str | None
+    qr_code_url: Annotated[str | None, AfterValidator(presign_qr_code)] = Field(
+        default=None, validation_alias="qr_code_key", description="Short-lived link to the QR code image"
+    )
     contact_email: str | None
     api_token_expires_at: datetime
     credentials_rotated_at: datetime | None
@@ -198,18 +230,6 @@ class PspList(BaseModel):
 
 # ---------- CRM-facing requests ----------
 
-class FormModel(BaseModel):
-    """Body of a multipart/form-data request."""
-
-    @model_validator(mode="before")
-    @classmethod
-    def drop_empty_fields(cls, data):
-        # Forms send optional fields that were left blank as "".
-        if isinstance(data, dict):
-            return {k: v for k, v in data.items() if v != ""}
-        return data
-
-
 class ScreenshotForm(FormModel):
     """Deposits and withdrawals are submitted as multipart/form-data so the screenshot travels with them."""
 
@@ -222,8 +242,14 @@ class DepositFields(ScreenshotForm):
     customer_name: str = Field(min_length=1, max_length=200)
     customer_email: EmailStr
     amount: Amount
+    payment_method: PaymentMethod = Field(description="How the customer paid: imps, rtgs or upi")
     utr_number: str | None = Field(default=None, max_length=100)
     comment: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("payment_method", mode="before")
+    @classmethod
+    def lower_payment_method(cls, v):
+        return v.strip().lower() if isinstance(v, str) else v
 
 
 class WithdrawalFields(ScreenshotForm):
@@ -370,6 +396,7 @@ class DepositOut(TransactionOutBase):
     bank_account_id: str | None  # empty for deposits submitted by an admin
     screenshot_url: ScreenshotLink
     utr_number: str | None
+    payment_method: PaymentMethod | None
 
 
 class WithdrawalOut(TransactionOutBase):
