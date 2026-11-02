@@ -151,6 +151,21 @@ def update_user(user_id: int, body: UserUpdate, db: DbSession, admin: AdminUser,
     return user
 
 
+@router.delete("/users/{user_id}")
+def delete_user(user_id: int, db: DbSession, admin: AdminUser, request: Request):
+    """Delete a login for good. Requests, chats and messages it touched keep their history, without the link to it."""
+    user = db.get(PortalUser, user_id)
+    if user is None:
+        raise AppError(ErrorCode.USER_NOT_FOUND)
+    if user.id == admin.id:
+        raise AppError(ErrorCode.USER_SELF_CHANGE, "You cannot delete yourself")
+    details = {"email": user.email, "role": user.role.value, "psp_code": user.psp_code}
+    db.delete(user)
+    audit(db, "user.deleted", actor_type="user", actor_id=admin.id, target=str(user_id), details=details,
+          request=request)
+    return {"success": True, "message": f"User {details['email']} deleted"}
+
+
 @router.post("/users/{user_id}/revoke-sessions")
 def revoke_user_sessions(user_id: int, db: DbSession, admin: AdminUser, request: Request):
     """Sign a login out everywhere. It can log in again with its password; deactivate it to block that."""

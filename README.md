@@ -109,6 +109,7 @@ Creating a PSP also creates its portal login (`login_email`, `login_password`). 
 | GET | `/api/v1/users?psp_code=` | admin: list logins, optionally for one PSP |
 | POST | `/api/v1/users` | admin: create an admin (`role: admin`) or an extra PSP login (`role: psp`, `psp_code`) |
 | PATCH | `/api/v1/users/{id}` | admin: rename, deactivate, reset password, `unlock`. A password reset or a deactivation also signs the login out. |
+| DELETE | `/api/v1/users/{id}` | admin: delete a login (not yourself). Its past reviews, chats and messages stay, unlinked from it. |
 | POST | `/api/v1/users/{id}/revoke-sessions` | admin: sign one login out everywhere |
 
 ### PSP management (admin)
