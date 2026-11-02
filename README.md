@@ -153,6 +153,7 @@ A PSP login only ever sees and acts on its own PSP's requests. An admin sees all
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/api/v1/portal/deposits` | filters: `status, psp_code (admin only), currency, customer, callback_failed, date_from, date_to, limit, offset` |
+| GET | `/api/v1/portal/deposits/export` | CSV download of every match (no paging), same filters minus `limit/offset`. Same columns as the list, without the screenshot link. Up to 100,000 rows; more returns `E1000`. |
 | POST | `/api/v1/portal/deposits` | admin: submit a request for a PSP. Same fields as the CRM API plus `psp_code`; no `signature`, no `bank_account_id` on a deposit, and no `source_account_id` on a withdrawal (the PSP's `account_number` is used). Starts as `pending`, and that PSP's login or an admin reviews it. |
 | GET | `/api/v1/portal/deposits/{id}` | |
 | POST | `/api/v1/portal/deposits/{id}/processing` | admin or PSP login: claim a pending request |
