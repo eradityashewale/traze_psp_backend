@@ -94,6 +94,19 @@ class Settings(BaseSettings):
     screenshot_max_mb: int = 5
     chat_attachment_max_mb: int = 10  # direct-chat attachments, any file type
 
+    # --- outgoing email (SMTP) ---
+    # Email is skipped (with a log warning) while SMTP_HOST or MAIL_FROM is empty.
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_security: Literal["starttls", "ssl", "none"] = "starttls"
+    smtp_timeout_seconds: float = 15
+    mail_from: str | None = None
+    mail_from_name: str = "PSP Portal"
+    # Frontend login page, linked in the welcome email sent to a new PSP
+    portal_login_url: str = "http://localhost:3000/login"
+
     cors_origins: str = ""  # comma-separated
 
     @property

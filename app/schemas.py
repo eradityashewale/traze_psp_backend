@@ -222,6 +222,10 @@ class PspCreated(BaseModel):
     psp: PspOut
     credentials: PspCredentials
     portal_login: UserOut
+    welcome_email_queued: bool = Field(
+        description="True when the portal login and password were queued for emailing to login_email. "
+        "False when SMTP is not configured; share the login yourself then."
+    )
 
 
 class PspList(BaseModel):

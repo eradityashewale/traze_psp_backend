@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, Request, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, File, Form, Request, UploadFile, status
 from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
@@ -24,6 +24,7 @@ from app.schemas import (
 )
 from app.security import generate_psp_code, generate_psp_credentials, sha256_hex
 from app.services.audit import audit
+from app.services.mailer import mail_enabled, send_psp_welcome_email
 from app.services.storage import delete_object, upload_qr_code
 from app.services.users import new_portal_user
 
@@ -70,12 +71,16 @@ def create_psp(
     db: DbSession,
     admin: AdminUser,
     request: Request,
+    background_tasks: BackgroundTasks,
 ):
     """Add a PSP with its bank details, optional payment QR code, and portal login (login_email / login_password).
 
     Sent as multipart/form-data. The PSP logs in with that login to approve or reject its own
     deposits and withdrawals. `psp_code` is generated here and returned in the response; it is
     not accepted in the body.
+
+    After the PSP is saved, login_email gets a welcome email with the portal link, the login
+    email and password, and the steps to change the password (see `welcome_email_queued`).
     """
     psp_code = _new_psp_code(db)
     psp = Psp(
@@ -94,6 +99,12 @@ def create_psp(
           details={"login_email": login.email}, request=request)
     db.refresh(psp)
     db.refresh(login)
+    # audit() has committed, so the login exists before the email goes out (after the response).
+    email_queued = mail_enabled()
+    background_tasks.add_task(
+        send_psp_welcome_email,
+        to=login.email, psp_name=psp.psp_name, psp_code=psp.psp_code, password=body.login_password,
+    )
     return PspCreated(
         psp=PspOut.model_validate(psp),
         credentials=PspCredentials(
@@ -103,6 +114,7 @@ def create_psp(
             api_token_expires_at=psp.api_token_expires_at,
         ),
         portal_login=UserOut.model_validate(login),
+        welcome_email_queued=email_queued,
     )
 
 
