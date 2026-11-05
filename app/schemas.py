@@ -186,6 +186,7 @@ class PspOut(BaseModel):
         default=None, validation_alias="qr_code_key", description="Short-lived link to the QR code image"
     )
     contact_email: str | None
+    portal_email: str | None = Field(default=None, description="Email the PSP uses to log in to the portal")
     api_token_expires_at: datetime
     credentials_rotated_at: datetime | None
     credentials_revoked_at: datetime | None

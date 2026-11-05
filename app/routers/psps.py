@@ -5,7 +5,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, Request, UploadFile, status
 from sqlalchemy import exists, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.config import get_settings
 from app.deps import AdminUser, DbSession
@@ -62,7 +62,8 @@ def _new_psp_code(db: Session) -> str:
 
 @router.get("", response_model=PspList)
 def list_psps(db: DbSession, _: AdminUser):
-    return PspList(psps=db.scalars(select(Psp).order_by(Psp.created_at)).all())
+    psps = db.scalars(select(Psp).options(selectinload(Psp.logins)).order_by(Psp.created_at)).all()
+    return PspList(psps=psps)
 
 
 @router.post("", response_model=PspCreated, status_code=status.HTTP_201_CREATED)

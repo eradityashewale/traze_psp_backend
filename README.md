@@ -117,7 +117,7 @@ Creating a PSP also creates its portal login (`login_email`, `login_password`). 
 |---|---|---|
 | GET | `/api/v1/psps` | list |
 | POST | `/api/v1/psps` | **multipart/form-data.** Create the PSP with its bank details (`bank_name`, `account_name`, `account_number`, `ifsc_code`, `branch`, all required), an optional payment QR code image (`qr_code`: PNG, JPEG or WEBP, stored in S3) **and its portal login** (`login_email`, `login_password`). `psp_code` is auto-generated (`PSP-XXXXXXXX`) and returned in the response; do not send it. A PSP has one bank account, given by `account_number` (required); the CRM sends that same number as `bank_account_id` on deposits and `source_account_id` on withdrawals. **The response shows `api_token`, `api_secret` and `signature_salt` once.** |
-| GET | `/api/v1/psps/{psp_code}` | |
+| GET | `/api/v1/psps/{psp_code}` | includes `portal_email` (the PSP's portal login email) |
 | PUT | `/api/v1/psps/{psp_code}` | JSON partial update: status, bank details, `contact_email` |
 | PUT | `/api/v1/psps/{psp_code}/qr-code` | multipart/form-data, field `qr_code`: upload or replace the QR code. Responses show it as a short-lived `qr_code_url` |
 | DELETE | `/api/v1/psps/{psp_code}/qr-code` | remove the QR code |

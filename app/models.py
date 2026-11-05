@@ -134,6 +134,16 @@ class Psp(Base):
         UTCDateTime, server_default=now6(), onupdate=now6()
     )
 
+    # Read-only; loaded only when accessed, so CRM API auth does not pay for it.
+    logins: Mapped[list["PortalUser"]] = relationship(
+        viewonly=True, order_by="PortalUser.id", lazy="select"
+    )
+
+    @property
+    def portal_email(self) -> str | None:
+        """Email of the PSP's portal login (the first one if there are several)."""
+        return self.logins[0].email if self.logins else None
+
 
 class RequestNonce(Base):
     """Nonces of signed CRM requests, kept until their timestamp expires, so a request cannot be replayed."""
