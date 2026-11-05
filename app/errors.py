@@ -37,6 +37,7 @@ class ErrorCode(Enum):
     PSP_ALREADY_EXISTS = ("E2005", 409, "PSP code already exists")
     PSP_HAS_OPEN_TRANSACTIONS = ("E2006", 409, "PSP has pending or processing transactions")
     PSP_CONFIG_INVALID = ("E2007", 422, "Invalid PSP configuration")
+    PSP_NO_BANK_DETAILS = ("E2008", 409, "PSP has no bank details set up yet, so it cannot take deposits")
     TX_NOT_FOUND = ("E3001", 404, "Transaction not found")
     TX_ALREADY_FINAL = ("E3002", 409, "Transaction is already approved, rejected or reversed")
     TX_INVALID_TRANSITION = ("E3003", 409, "Status change not allowed")

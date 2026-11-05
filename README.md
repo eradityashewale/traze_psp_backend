@@ -138,10 +138,15 @@ Headers: `Authorization: Bearer <API_TOKEN>`, `X-API-Secret: <API_SECRET>`, plus
 
 | Method | Path |
 |---|---|
+| GET | `/api/v1/deposits/payment-details` |
 | POST | `/api/v1/deposits` |
 | GET | `/api/v1/deposits/{deposit_id}` |
 | POST | `/api/v1/withdrawals` |
 | GET | `/api/v1/withdrawals/{withdrawal_id}` |
+
+`GET /api/v1/deposits/payment-details` returns the calling PSP's bank account and payment QR code, so the CRM can show the customer where to pay before a deposit. It takes only the token and secret headers (no signature, no parameters); the credentials pick the PSP. Response: `psp_code, psp_name, bank_account_id, bank_name, account_name, account_number, ifsc_code, branch, qr_code_url, payment_methods, currency, updated_at`. `bank_account_id` is the value the CRM sends back on `POST /deposits`. `qr_code_url` is a short-lived presigned link (`S3_URL_EXPIRES_SECONDS`), `null` when no QR is set. The response is sent with `Cache-Control: no-store`, and the CRM should call it each time the deposit screen opens. Errors: `E2001` when the PSP is inactive, `E2008` when it has no bank account set up. A CRM that works with several PSPs calls it once per PSP, with each PSP's own credentials.
+
+The CRM integration guide PDF is built from `scripts/build_crm_guide.py` (`pip install reportlab`, then `python scripts/build_crm_guide.py`).
 
 Every accepted `POST` creates a new record and returns `201`. There is no `idempotency_key`: sending the same request twice creates two records.
 

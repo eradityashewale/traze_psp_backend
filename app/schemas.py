@@ -306,6 +306,32 @@ class WithdrawalCreate(WithdrawalFields, SignedRequest):
     dest_account_name: str = Field(min_length=1, max_length=200)
 
 
+class PaymentDetailsOut(BaseModel):
+    """Where the customer pays a deposit: the calling PSP's bank account and QR code."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    psp_code: str
+    psp_name: str
+    bank_account_id: str = Field(
+        validation_alias="account_number",
+        description="Send this back as bank_account_id on POST /api/v1/deposits",
+    )
+    bank_name: str | None
+    account_name: str | None = Field(description="Account holder name")
+    account_number: str
+    ifsc_code: str | None
+    branch: str | None
+    qr_code_url: Annotated[str | None, AfterValidator(presign_qr_code)] = Field(
+        default=None,
+        validation_alias="qr_code_key",
+        description="Short-lived link to the payment QR image (S3_URL_EXPIRES_SECONDS), or null when none is set",
+    )
+    payment_methods: list[PaymentMethod] = Field(default_factory=lambda: list(PaymentMethod))
+    currency: Currency = "INR"
+    updated_at: datetime = Field(description="When the PSP's details last changed")
+
+
 class DepositSubmitted(BaseModel):
     success: bool = True
     deposit_id: str

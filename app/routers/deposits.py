@@ -2,9 +2,10 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Form, Request, status
+from fastapi import APIRouter, Form, Request, Response, status
 
 from app.deps import CallingPsp, DbSession, VerifiedPsp
+from app.errors import AppError, ErrorCode
 from app.models import CreatedBy, Deposit, TxKind
 from app.routers.chats import build_chat_router
 from app.routers.review import build_review_router
@@ -15,6 +16,7 @@ from app.schemas import (
     DepositOut,
     DepositStatusOut,
     DepositSubmitted,
+    PaymentDetailsOut,
 )
 from app.services.audit import audit
 from app.services.signature import verify_request_signature
@@ -53,6 +55,20 @@ def submit_deposit(
         status=tx.status,
         message="Deposit received and queued for review",
     )
+
+
+@router.get("/payment-details", response_model=PaymentDetailsOut)
+def get_payment_details(psp: CallingPsp, response: Response):
+    """Bank account and QR code the customer pays into, shown by the CRM before a deposit.
+
+    Call it from the CRM backend each time a customer opens the deposit screen; do not cache it,
+    because an admin can change the account at any time. The QR link expires after a few minutes.
+    """
+    ensure_psp_can_accept(psp, None)
+    if not psp.account_number:
+        raise AppError(ErrorCode.PSP_NO_BANK_DETAILS)
+    response.headers["Cache-Control"] = "no-store"
+    return PaymentDetailsOut.model_validate(psp)
 
 
 @router.get("/{deposit_id}", response_model=DepositStatusOut)
