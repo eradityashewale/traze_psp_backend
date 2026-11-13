@@ -24,6 +24,7 @@ from app.models import (
 )
 from app.schemas import (
     PaymentMethodOut,
+    PaymentMethodStatusUpdate,
     PaymentMethodUpsert,
     PspCreate,
     PspCreated,
@@ -229,13 +230,48 @@ def upsert_payment_method(
     return row
 
 
-@router.delete("/{psp_code}/payment-methods/{method}", response_model=PspOut)
-def remove_payment_method(psp_code: str, method: PaymentMethod, db: DbSession, admin: AdminUser, request: Request):
-    """Remove a payment method. The PSP's last complete method cannot be removed."""
+@router.patch("/{psp_code}/payment-methods/{method}/status", response_model=PaymentMethodOut)
+def set_payment_method_status(
+    psp_code: str,
+    method: PaymentMethod,
+    body: PaymentMethodStatusUpdate,
+    db: DbSession,
+    admin: AdminUser,
+    request: Request,
+):
+    """Activate or deactivate a payment method. Its details are kept either way.
+
+    An inactive method is left out of GET /api/v1/deposits/payment-details and deposits with it
+    are refused (E2009). The PSP's last active, complete method cannot be deactivated.
+    """
     psp = _get_psp(db, psp_code)
     row = _get_method(psp, method)
-    if row.is_complete and len(psp.ready_methods) == 1:
-        raise AppError(ErrorCode.PSP_CONFIG_INVALID, "A PSP needs at least one complete payment method; add another first")
+    if row.is_active == body.is_active:
+        return row
+    if not body.is_active and row.is_ready and len(psp.ready_methods) == 1:
+        raise AppError(
+            ErrorCode.PSP_CONFIG_INVALID,
+            "A PSP needs at least one active, complete payment method; add or activate another first",
+        )
+    row.is_active = body.is_active
+    db.flush()
+    audit(db, "psp.payment_method_activated" if body.is_active else "psp.payment_method_deactivated",
+          actor_type="user", actor_id=admin.id, target=psp.psp_code, details={"method": method.value},
+          request=request)
+    db.refresh(row)
+    return row
+
+
+@router.delete("/{psp_code}/payment-methods/{method}", response_model=PspOut)
+def remove_payment_method(psp_code: str, method: PaymentMethod, db: DbSession, admin: AdminUser, request: Request):
+    """Remove a payment method. The PSP's last active, complete method cannot be removed."""
+    psp = _get_psp(db, psp_code)
+    row = _get_method(psp, method)
+    if row.is_ready and len(psp.ready_methods) == 1:
+        raise AppError(
+            ErrorCode.PSP_CONFIG_INVALID,
+            "A PSP needs at least one active, complete payment method; add or activate another first",
+        )
     qr_key = row.qr_code_key
     psp.payment_methods.remove(row)
     db.flush()

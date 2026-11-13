@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    true,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -154,8 +155,8 @@ class Psp(Base):
 
     @property
     def ready_methods(self) -> list["PspPaymentMethod"]:
-        """Methods with all their details filled in: the ones the PSP can take payments with."""
-        return [m for m in self.payment_methods if m.is_complete]
+        """Active methods with all their details filled in: the ones the PSP can take payments with."""
+        return [m for m in self.payment_methods if m.is_ready]
 
 
 # Details each payment method needs. IMPS and RTGS pay into a bank account. UPI needs no bank
@@ -195,6 +196,8 @@ class PspPaymentMethod(Base):
     # UPI
     upi_id: Mapped[str | None] = mapped_column(String(100))
     qr_code_key: Mapped[str | None] = mapped_column(String(1000))  # S3 key of the UPI QR image
+    # Switched off by an admin: the details stay, but the method is not offered or accepted.
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=now6())
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=now6(), onupdate=now6())
 
@@ -207,6 +210,11 @@ class PspPaymentMethod(Base):
     @property
     def is_complete(self) -> bool:
         return not self.missing_fields
+
+    @property
+    def is_ready(self) -> bool:
+        """Active and complete, so payments can use it."""
+        return self.is_active and self.is_complete
 
     @property
     def account_id(self) -> str | None:

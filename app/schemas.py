@@ -218,6 +218,10 @@ class PaymentMethodUpsert(FormModel, PaymentMethodFields):
     """Add a method (send all its details) or change one (send only the details to change)."""
 
 
+class PaymentMethodStatusUpdate(BaseModel):
+    is_active: bool = Field(description="false switches the method off (details are kept); true switches it back on")
+
+
 class PspUpdate(BaseModel):
     """Only send fields you want to change — others stay as-is. Payment methods have their own endpoints."""
 
@@ -241,7 +245,9 @@ class PaymentMethodOut(BaseModel):
     qr_code_url: Annotated[str | None, AfterValidator(presign_qr_code)] = Field(
         default=None, validation_alias="qr_code_key", description="Short-lived link to the UPI QR code image"
     )
-    is_complete: bool = Field(description="All details are set, so deposits can use this method")
+    is_active: bool = Field(description="Switched on by the admin; inactive methods are not offered or accepted")
+    is_complete: bool = Field(description="All details are set")
+    is_ready: bool = Field(description="Active and complete, so deposits can use this method")
     missing_fields: list[str]
     updated_at: datetime
 

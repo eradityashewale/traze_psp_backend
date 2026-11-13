@@ -35,12 +35,16 @@ def ensure_psp_can_accept(psp: Psp) -> None:
 def deposit_method(psp: Psp, method: PaymentMethod, bank_account_id: str | None) -> PspPaymentMethod:
     """The PSP's details for the method the customer paid with.
 
-    The method must be fully set up for this PSP, and bank_account_id (when given) must be that
+    The method must be fully set up and active for this PSP, and bank_account_id (when given) must be that
     method's account: the account number for imps / rtgs, the UPI ID for upi.
     """
     row = psp.get_method(method)
     if row is None or not row.is_complete:
         raise AppError(ErrorCode.PAYMENT_METHOD_NOT_AVAILABLE, f"This PSP does not accept {method.value} payments")
+    if not row.is_active:
+        raise AppError(
+            ErrorCode.PAYMENT_METHOD_NOT_AVAILABLE, f"This PSP's {method.value} payments are currently inactive"
+        )
     if bank_account_id is not None and bank_account_id != row.account_id:
         raise AppError(
             ErrorCode.BANK_ACCOUNT_NOT_ALLOWED,
