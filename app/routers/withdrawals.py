@@ -18,7 +18,7 @@ from app.schemas import (
 )
 from app.services.audit import audit
 from app.services.signature import verify_request_signature
-from app.services.transactions import create_transaction, ensure_psp_can_accept, get_for_psp
+from app.services.transactions import create_transaction, ensure_psp_can_accept, ensure_source_account, get_for_psp
 
 router = APIRouter(prefix="/api/v1/withdrawals", tags=["CRM · Withdrawals"])
 review_router = build_review_router(Withdrawal, WithdrawalOut, AdminWithdrawalCreate, "withdrawal", "source_account_id")
@@ -45,7 +45,8 @@ def submit_withdrawal(
         },
         body,
     )
-    ensure_psp_can_accept(psp, body.source_account_id)
+    ensure_psp_can_accept(psp)
+    ensure_source_account(psp, body.source_account_id)
 
     data = body.model_dump(exclude=SIGNING_FIELDS | {"screenshot"})
     tx = create_transaction(db, Withdrawal, psp, data, CreatedBy.crm, body.screenshot)

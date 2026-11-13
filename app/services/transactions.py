@@ -12,8 +12,10 @@ from app.models import (
     FINAL_STATUSES,
     CreatedBy,
     Deposit,
+    PaymentMethod,
     PortalUser,
     Psp,
+    PspPaymentMethod,
     PspStatus,
     TxStatus,
     UserRole,
@@ -25,11 +27,38 @@ from app.services.storage import upload_screenshot
 Transaction = Deposit | Withdrawal
 
 
-def ensure_psp_can_accept(psp: Psp, bank_account_id: str | None) -> None:
+def ensure_psp_can_accept(psp: Psp) -> None:
     if psp.status != PspStatus.active:
         raise AppError(ErrorCode.PSP_INACTIVE)
-    if bank_account_id is not None and bank_account_id != psp.account_number:
-        raise AppError(ErrorCode.BANK_ACCOUNT_NOT_ALLOWED, f"Bank account {bank_account_id} is not managed by this PSP")
+
+
+def deposit_method(psp: Psp, method: PaymentMethod, bank_account_id: str | None) -> PspPaymentMethod:
+    """The PSP's details for the method the customer paid with.
+
+    The method must be fully set up for this PSP, and bank_account_id (when given) must be that
+    method's account: the account number for imps / rtgs, the UPI ID for upi.
+    """
+    row = psp.get_method(method)
+    if row is None or not row.is_complete:
+        raise AppError(ErrorCode.PAYMENT_METHOD_NOT_AVAILABLE, f"This PSP does not accept {method.value} payments")
+    if bank_account_id is not None and bank_account_id != row.account_id:
+        raise AppError(
+            ErrorCode.BANK_ACCOUNT_NOT_ALLOWED,
+            f"{bank_account_id} is not this PSP's {method.value} account",
+        )
+    return row
+
+
+def ensure_source_account(psp: Psp, account_id: str) -> None:
+    """A withdrawal's source_account_id must be one of the PSP's payment method accounts."""
+    if account_id not in {m.account_id for m in psp.ready_methods}:
+        raise AppError(ErrorCode.BANK_ACCOUNT_NOT_ALLOWED, f"Bank account {account_id} is not managed by this PSP")
+
+
+def default_source_account(psp: Psp) -> str:
+    """Account an admin-submitted withdrawal is paid from: IMPS first, then RTGS, then UPI."""
+    ready = psp.ready_methods
+    return ready[0].account_id if ready else ""
 
 
 def create_transaction(

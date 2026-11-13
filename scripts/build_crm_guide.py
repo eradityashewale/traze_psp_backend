@@ -186,9 +186,9 @@ TABLE([1, 1, 2], ["Item", "Looks like", "Used for"],
       ["`api_token`", "`pspt_...`", "`Authorization` header"],
       ["`api_secret`", "`psps_...`", "`X-API-Secret` header"],
       ["`signature_salt`", "64 hex characters", "Key for the HMAC signature on your requests and on our callbacks"],
-      ["PSP account number", "digits / letters",
-       "Sent as `bank_account_id` on a deposit and `source_account_id` on a withdrawal. It is also returned "
-       "by the payment details call (section 7)."])
+      ["PSP account", "account number or UPI ID",
+       "Sent as `bank_account_id` on a deposit and `source_account_id` on a withdrawal. Each payment method "
+       "(IMPS, RTGS, UPI) has its own; the payment details call (section 7) returns them."])
 BULLETS(
     "The API token and secret expire every 90 days. We send you a new pair before that.",
     "After a rotation the old pair keeps working for 72 hours, so you can switch without downtime.",
@@ -413,8 +413,9 @@ P("**Optional RSA signing.** If we agree to switch it on, you also send an `X-Si
   "bits or more). You give us the public key. It is off unless we confirm it with you.")
 
 H1("7. Show the payment details to the customer")
-P("Before a customer pays a deposit, they need to know where to send the money. This call returns the PSP's bank "
-  "account and payment QR code, so your CRM can show them on its deposit screen.")
+P("Before a customer pays a deposit, they need to know where to send the money. A PSP takes up to three payment "
+  "methods, IMPS, RTGS and UPI, each with its own details. This call returns the methods the PSP takes, so your "
+  "CRM can show them on its deposit screen.")
 CODE("GET <base-url>/api/v1/deposits/payment-details")
 P("It needs only the two headers from section 5, with no signature and no parameters. The credentials tell us "
   "which PSP is calling, and we return that PSP's details.")
@@ -427,38 +428,58 @@ CODE("""
 {
   "psp_code": "PSP001",
   "psp_name": "XYZ Payments",
-  "bank_account_id": "50100123456789",
-  "bank_name": "HDFC Bank",
-  "account_name": "XYZ Payments Pvt Ltd",
-  "account_number": "50100123456789",
-  "ifsc_code": "HDFC0001234",
-  "branch": "Andheri East, Mumbai",
-  "qr_code_url": "https://<bucket>.s3.ap-south-1.amazonaws.com/psp-qr/...&X-Amz-Signature=...",
-  "payment_methods": ["imps", "rtgs", "upi"],
+  "payment_methods": ["imps", "upi"],
+  "methods": [
+    {
+      "method": "imps",
+      "bank_account_id": "50100123456789",
+      "bank_name": "HDFC Bank",
+      "account_name": "XYZ Payments Pvt Ltd",
+      "account_number": "50100123456789",
+      "ifsc_code": "HDFC0001234",
+      "branch": "Andheri East, Mumbai",
+      "upi_id": null,
+      "qr_code_url": null
+    },
+    {
+      "method": "upi",
+      "bank_account_id": "xyzpay@hdfcbank",
+      "bank_name": null,
+      "account_name": null,
+      "account_number": null,
+      "ifsc_code": null,
+      "branch": null,
+      "upi_id": "xyzpay@hdfcbank",
+      "qr_code_url": "https://<bucket>.s3.ap-south-1.amazonaws.com/psp-qr/...&X-Amz-Signature=..."
+    }
+  ],
   "currency": "INR",
   "updated_at": "2026-11-01T10:15:00Z"
 }
 """)
 TABLE([1.2, 4], ["Field", "Description"],
       ["`psp_code`, `psp_name`", "The PSP whose credentials you used"],
-      ["`bank_account_id`", "Send this value back as `bank_account_id` when you create the deposit (section 8)"],
+      ["`payment_methods`", "The methods the PSP takes: `imps`, `rtgs` and/or `upi`. Only offer these."],
+      ["`methods`", "One entry per method, with the fields below"],
+      ["`method`", "`imps`, `rtgs` or `upi`. Send it as `payment_method` on the deposit."],
+      ["`bank_account_id`", "Send this back as `bank_account_id` with that `payment_method` when you create the "
+                            "deposit (section 8): the account number for IMPS / RTGS, the UPI ID for UPI"],
       ["`bank_name`, `account_name`, `account_number`, `ifsc_code`, `branch`",
-       "The bank account the customer pays into. `account_name` is the account holder name. Show all of them."],
-      ["`qr_code_url`", "Link to the payment QR image (for UPI). It expires after about 15 minutes, so show it "
-                        "straight away and do not store it. It is `null` when the PSP has no QR code; then show "
-                        "only the bank details."],
-      ["`payment_methods`", "How the customer can pay: `imps`, `rtgs` or `upi`. Send the one they used as "
-                            "`payment_method` on the deposit."],
+       "IMPS / RTGS: the bank account the customer pays into. `account_name` is the account holder name. "
+       "All `null` for UPI."],
+      ["`upi_id`", "UPI: the UPI ID the customer pays to. `null` for IMPS / RTGS."],
+      ["`qr_code_url`", "UPI: link to the payment QR image. It expires after about 15 minutes, so show it "
+                        "straight away and do not store it. Show it with the UPI ID. `null` for IMPS / RTGS."],
       ["`currency`", "Always `INR`"],
       ["`updated_at`", "When the PSP's details last changed"])
 H2("7.1 How to use it")
 STEPS(
     "The customer opens the deposit screen in your CRM.",
     "Your CRM server calls `payment-details` with the credentials of the PSP you want the customer to pay.",
-    "Your CRM shows the bank details and the QR code to the customer.",
-    "The customer pays, then gives you the screenshot and UTR number.",
-    "Your CRM creates the deposit (section 8) with the **same PSP's credentials** and the `bank_account_id` from "
-    "step 2.",
+    "Your CRM shows the methods to the customer: bank details for IMPS / RTGS, UPI ID and QR code for UPI.",
+    "The customer pays with one of them, then gives you the screenshot and UTR number.",
+    "Your CRM creates the deposit (section 8) with the **same PSP's credentials**, that method as "
+    "`payment_method`, and that method's `bank_account_id` from step 2.",
 )
 NOTE("**Call it every time a customer opens the deposit screen. Do not cache the details.** The PSP team can change "
      "the bank account at any time. A customer who sees an old account may send money to an account that is no "
@@ -477,7 +498,7 @@ BULLETS(
 H2("7.3 Errors")
 TABLE([0.7, 0.5, 2.3, 2.3], ["Code", "HTTP", "Meaning", "What to do"],
       ["`E2001`", "403", "PSP is inactive", "Do not offer deposits through this PSP"],
-      ["`E2008`", "409", "The PSP has no bank details set up yet",
+      ["`E2008`", "409", "The PSP has no payment method set up yet",
        "Do not offer deposits through this PSP; tell us"],
       ["`E1001` to `E1014`", "401", "Credentials missing, wrong, expired or revoked", "See section 11"])
 
@@ -487,8 +508,8 @@ TABLE([1.3, 0.6, 3], ["Field", "Required", "Notes"],
       ["`customer_name`", "Yes", "Up to 200 characters"],
       ["`customer_email`", "Yes", "Valid email address"],
       ["`amount`", "Yes", "Greater than 0, at most 2 decimal places, in INR"],
-      ["`bank_account_id`", "Yes", "The `bank_account_id` from the payment details (section 7)"],
-      ["`payment_method`", "Yes", "How the customer paid: `imps`, `rtgs` or `upi`"],
+      ["`bank_account_id`", "Yes", "The `bank_account_id` of the method used, from the payment details (section 7)"],
+      ["`payment_method`", "Yes", "How the customer paid: `imps`, `rtgs` or `upi`. The PSP must take it."],
       ["`screenshot`", "Yes", "File: PNG, JPEG, WEBP or PDF, up to 5 MB"],
       ["`utr_number`", "No", "Up to 100 characters"],
       ["`comment`", "No", "Up to 2000 characters"],
@@ -497,7 +518,7 @@ CODE("""
 curl -X POST https://<portal-host>/api/v1/deposits \\
   -H "Authorization: Bearer <api_token>" -H "X-API-Secret: <api_secret>" \\
   -F customer_name="Rahul Sharma" -F customer_email=rahul@example.com \\
-  -F amount=1200 -F bank_account_id=50100123456789 -F payment_method=upi \\
+  -F amount=1200 -F bank_account_id=50100123456789 -F payment_method=imps \\
   -F utr_number=UTR123456 \\
   -F timestamp=1791625500 -F nonce=3f9c1e0a7b2d4c5e8f6a1b2c3d4e5f60 \\
   -F signature=<hmac hex> -F screenshot=@receipt.png
@@ -572,9 +593,11 @@ TABLE([0.75, 0.45, 2.2, 2.1], ["Code", "HTTP", "Meaning", "What to do"],
       ["`E1013`", "409", "Nonce already used", "That request was already accepted. See section 12."],
       ["`E1014`", "401", "API token revoked", "Ask us for new credentials"],
       ["`E2001`", "403", "PSP is inactive", "Contact us"],
-      ["`E2003`", "422", "Account number does not belong to this PSP",
+      ["`E2003`", "422", "Account does not belong to this PSP, or not to the `payment_method` sent",
        "Check `bank_account_id` / `source_account_id`, and that you used the same PSP's credentials"],
-      ["`E2008`", "409", "PSP has no bank details set up yet", "Do not offer deposits through this PSP; tell us"],
+      ["`E2008`", "409", "PSP has no payment method set up yet", "Do not offer deposits through this PSP; tell us"],
+      ["`E2009`", "422", "PSP does not take this `payment_method`",
+       "Only offer the methods listed in the payment details"],
       ["`E3001`", "404", "ID not found for this PSP", "Check the ID and the credentials used"],
       ["`E3004`", "422", "Screenshot type or size not accepted", "PNG, JPEG, WEBP or PDF, up to 5 MB"],
       ["`E5000` to `E5002`", "500 / 503", "Problem on our side", "Retry later; contact us if it continues"])

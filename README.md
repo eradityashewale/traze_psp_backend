@@ -68,6 +68,7 @@ Schema changes are managed with **Alembic**. Migration files live in `alembic/ve
 | `0019` | Adds the PSP's bank details (`bank_name`, `account_name`, `branch`, `account_type`) and `qr_code_key` (S3 key of its payment QR code) |
 | `0020` | Drops `psps.account_type` |
 | `0021` | Adds `deposits.payment_method` (`imps`, `rtgs` or `upi`) |
+| `0022` | Adds `psp_payment_methods` (IMPS, RTGS, UPI, one row each per PSP). The PSP's bank account becomes its IMPS and RTGS methods, and its QR code becomes its UPI method (UPI ID still to be filled in). Drops the bank columns and `qr_code_key` from `psps` |
 
 By default the app runs `alembic upgrade head` when it starts (`RUN_MIGRATIONS_ON_STARTUP=true`), so a new migration is applied on the next start. Set it to `false` to apply migrations yourself.
 
@@ -116,11 +117,12 @@ Creating a PSP also creates its portal login (`login_email`, `login_password`). 
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/api/v1/psps` | list |
-| POST | `/api/v1/psps` | **multipart/form-data.** Create the PSP with its bank details (`bank_name`, `account_name`, `account_number`, `ifsc_code`, `branch`, all required), an optional payment QR code image (`qr_code`: PNG, JPEG or WEBP, stored in S3) **and its portal login** (`login_email`, `login_password`). `psp_code` is auto-generated (`PSP-XXXXXXXX`) and returned in the response; do not send it. A PSP has one bank account, given by `account_number` (required); the CRM sends that same number as `bank_account_id` on deposits and `source_account_id` on withdrawals. **The response shows `api_token`, `api_secret` and `signature_salt` once.** |
+| POST | `/api/v1/psps` | **multipart/form-data.** Create the PSP (`psp_name`, optional `contact_email`) with **one payment method, required**: `payment_method` (`imps`, `rtgs` or `upi`) and that method's details. `imps` / `rtgs`: `bank_name`, `account_name`, `account_number`, `ifsc_code`, `branch`. `upi`: only `upi_id` and the `qr_code` image (PNG, JPEG or WEBP, stored in S3), both required; no bank details. Fields of another method are rejected. Also **its portal login** (`login_email`, `login_password`). `psp_code` is auto-generated (`PSP-XXXXXXXX`) and returned in the response; do not send it. Add the other two methods later with `PUT .../payment-methods/{method}`. **The response shows `api_token`, `api_secret` and `signature_salt` once.** |
 | GET | `/api/v1/psps/{psp_code}` | includes `portal_email` (the PSP's portal login email) |
-| PUT | `/api/v1/psps/{psp_code}` | JSON partial update: status, bank details, `contact_email` |
-| PUT | `/api/v1/psps/{psp_code}/qr-code` | multipart/form-data, field `qr_code`: upload or replace the QR code. Responses show it as a short-lived `qr_code_url` |
-| DELETE | `/api/v1/psps/{psp_code}/qr-code` | remove the QR code |
+| PUT | `/api/v1/psps/{psp_code}` | JSON partial update: `psp_name`, `status`, `contact_email` |
+| GET | `/api/v1/psps/{psp_code}/payment-methods` | the PSP's payment methods, each with `is_complete` and `missing_fields` (also in every PSP response as `payment_methods`) |
+| PUT | `/api/v1/psps/{psp_code}/payment-methods/{method}` | multipart/form-data. `method` is `imps`, `rtgs` or `upi`. Adds the method (send all its details, same fields as on create) or changes it (send only what changes). For `upi`, a new `qr_code` replaces the old one (the QR code is required, so it can be replaced but not removed); responses show it as a short-lived `qr_code_url` |
+| DELETE | `/api/v1/psps/{psp_code}/payment-methods/{method}` | remove a method; refused (`E2007`) if the PSP would have no complete method left |
 | POST | `/api/v1/psps/{psp_code}/rotate-credentials` | `{grace_hours?, rotate_salt?}` |
 | POST | `/api/v1/psps/{psp_code}/revoke-credentials` | `{previous_only?, revoke_sessions?}` — kill the API token and secret immediately |
 | POST | `/api/v1/psps/{psp_code}/revoke-sessions` | sign out every portal login of the PSP |
@@ -144,7 +146,7 @@ Headers: `Authorization: Bearer <API_TOKEN>`, `X-API-Secret: <API_SECRET>`, plus
 | POST | `/api/v1/withdrawals` |
 | GET | `/api/v1/withdrawals/{withdrawal_id}` |
 
-`GET /api/v1/deposits/payment-details` returns the calling PSP's bank account and payment QR code, so the CRM can show the customer where to pay before a deposit. It takes only the token and secret headers (no signature, no parameters); the credentials pick the PSP. Response: `psp_code, psp_name, bank_account_id, bank_name, account_name, account_number, ifsc_code, branch, qr_code_url, payment_methods, currency, updated_at`. `bank_account_id` is the value the CRM sends back on `POST /deposits`. `qr_code_url` is a short-lived presigned link (`S3_URL_EXPIRES_SECONDS`), `null` when no QR is set. The response is sent with `Cache-Control: no-store`, and the CRM should call it each time the deposit screen opens. Errors: `E2001` when the PSP is inactive, `E2008` when it has no bank account set up. A CRM that works with several PSPs calls it once per PSP, with each PSP's own credentials.
+`GET /api/v1/deposits/payment-details` returns how the customer can pay the calling PSP, one entry per payment method it takes, so the CRM can show the customer where to pay before a deposit. It takes only the token and secret headers (no signature, no parameters); the credentials pick the PSP. Response: `psp_code, psp_name, payment_methods, methods, currency, updated_at`. `payment_methods` lists the methods (`imps`, `rtgs`, `upi`); `methods` has one object per method: `method, bank_account_id, bank_name, account_name, account_number, ifsc_code, branch, upi_id, qr_code_url` (bank fields are set for `imps` / `rtgs`; `upi` has only `upi_id` and `qr_code_url`, its bank fields are `null`). `bank_account_id` is the value the CRM sends back on `POST /deposits` together with that `payment_method`: the account number for `imps` / `rtgs`, the UPI ID for `upi`. Only complete methods are listed. `qr_code_url` is a short-lived presigned link (`S3_URL_EXPIRES_SECONDS`), `null` for `imps` / `rtgs`. The response is sent with `Cache-Control: no-store`, and the CRM should call it each time the deposit screen opens. Errors: `E2001` when the PSP is inactive, `E2008` when it has no complete payment method. A CRM that works with several PSPs calls it once per PSP, with each PSP's own credentials.
 
 The CRM integration guide PDF is built from `scripts/build_crm_guide.py` (`pip install reportlab`, then `python scripts/build_crm_guide.py`).
 
@@ -159,7 +161,7 @@ A PSP login only ever sees and acts on its own PSP's requests. An admin sees all
 |---|---|---|
 | GET | `/api/v1/portal/deposits` | filters: `status, psp_code (admin only), currency, customer, callback_failed, date_from, date_to, limit, offset` |
 | GET | `/api/v1/portal/deposits/export` | CSV download of every match (no paging), same filters minus `limit/offset`. Same columns as the list, without the screenshot link. Up to 100,000 rows; more returns `E1000`. |
-| POST | `/api/v1/portal/deposits` | admin: submit a request for a PSP. Same fields as the CRM API plus `psp_code`; no `signature`, no `bank_account_id` on a deposit, and no `source_account_id` on a withdrawal (the PSP's `account_number` is used). Starts as `pending`, and that PSP's login or an admin reviews it. |
+| POST | `/api/v1/portal/deposits` | admin: submit a request for a PSP. Same fields as the CRM API plus `psp_code`; no `signature`, no `bank_account_id` on a deposit (the account of the chosen `payment_method` is recorded; the PSP must have that method), and no `source_account_id` on a withdrawal (the PSP's first payment method account is used: IMPS, then RTGS, then UPI). Starts as `pending`, and that PSP's login or an admin reviews it. |
 | GET | `/api/v1/portal/deposits/{id}` | |
 | POST | `/api/v1/portal/deposits/{id}/processing` | admin or PSP login: claim a pending request |
 | POST | `/api/v1/portal/deposits/{id}/approve` | admin or PSP login: `{comment?}` → callback |
@@ -230,7 +232,7 @@ Deposits and withdrawals are submitted as **`multipart/form-data`** (not JSON), 
 * Deposit: the `screenshot` file is required, on the CRM API and when an admin submits from the portal.
 * Withdrawal: the `screenshot` file is optional.
 
-A deposit also needs `payment_method`: `imps`, `rtgs` or `upi` (any case), on the CRM API and when an admin submits from the portal. It is not part of the signature, and portal responses include it.
+A deposit also needs `payment_method`: `imps`, `rtgs` or `upi` (any case), on the CRM API and when an admin submits from the portal. The PSP must have that method set up (`E2009` otherwise), and on the CRM API `bank_account_id` must be that method's account (`E2003` otherwise). `payment_method` is not part of the signature, and portal responses include it. A withdrawal's `source_account_id` can be any of the PSP's payment method accounts.
 
 ```bash
 curl -X POST https://<host>/api/v1/deposits \

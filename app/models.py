@@ -43,6 +43,13 @@ class PaymentMethod(str, enum.Enum):
     rtgs = "rtgs"
     upi = "upi"
 
+    @classmethod
+    def _missing_(cls, value):
+        # Accept any case and stray spaces: "IMPS", " Upi ".
+        if isinstance(value, str):
+            return cls.__members__.get(value.strip().lower())
+        return None
+
 
 class CreatedBy(str, enum.Enum):
     admin = "admin"  # submitted by an admin from the portal
@@ -121,13 +128,6 @@ class Psp(Base):
 
 
     status: Mapped[PspStatus] = mapped_column(_enum(PspStatus, "psp_status"), default=PspStatus.active)
-    # The PSP's one bank account.
-    bank_name: Mapped[str | None] = mapped_column(String(200))
-    account_name: Mapped[str | None] = mapped_column(String(200))  # account holder name
-    account_number: Mapped[str | None] = mapped_column(String(34))
-    ifsc_code: Mapped[str | None] = mapped_column(String(11))
-    branch: Mapped[str | None] = mapped_column(String(200))
-    qr_code_key: Mapped[str | None] = mapped_column(String(1000))  # S3 key of the payment QR image
     contact_email: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=now6())
     updated_at: Mapped[datetime] = mapped_column(
@@ -143,6 +143,75 @@ class Psp(Base):
     def portal_email(self) -> str | None:
         """Email of the PSP's portal login (the first one if there are several)."""
         return self.logins[0].email if self.logins else None
+
+    # IMPS, RTGS and UPI, each with its own details; at most one row per method.
+    payment_methods: Mapped[list["PspPaymentMethod"]] = relationship(
+        cascade="all, delete-orphan", passive_deletes=True, order_by="PspPaymentMethod.method", lazy="select"
+    )
+
+    def get_method(self, method: PaymentMethod) -> "PspPaymentMethod | None":
+        return next((m for m in self.payment_methods if m.method == method), None)
+
+    @property
+    def ready_methods(self) -> list["PspPaymentMethod"]:
+        """Methods with all their details filled in: the ones the PSP can take payments with."""
+        return [m for m in self.payment_methods if m.is_complete]
+
+
+# Details each payment method needs. IMPS and RTGS pay into a bank account. UPI needs no bank
+# details: only the UPI ID and the QR code image (scanner), both required.
+BANK_FIELDS = ("bank_name", "account_name", "account_number", "ifsc_code", "branch")
+METHOD_FIELDS: dict[PaymentMethod, tuple[str, ...]] = {
+    PaymentMethod.imps: BANK_FIELDS,
+    PaymentMethod.rtgs: BANK_FIELDS,
+    PaymentMethod.upi: ("upi_id", "qr_code"),
+}
+DETAIL_FIELDS = (*BANK_FIELDS, "upi_id")
+
+
+def missing_method_fields(method: PaymentMethod, values: dict, *, has_qr: bool = False) -> list[str]:
+    """Required details not set. `qr_code` (UPI) is a file, so its presence is passed as has_qr."""
+    return [
+        f for f in METHOD_FIELDS[method]
+        if not (has_qr if f == "qr_code" else values.get(f))
+    ]
+
+
+class PspPaymentMethod(Base):
+    """One way a PSP takes payments (IMPS, RTGS or UPI) with that method's details."""
+
+    __tablename__ = "psp_payment_methods"
+    __table_args__ = (UniqueConstraint("psp_id", "method", name="uq_psp_payment_method"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    psp_id: Mapped[int] = mapped_column(ForeignKey("psps.id", ondelete="CASCADE"))
+    method: Mapped[PaymentMethod] = mapped_column(_enum(PaymentMethod, "payment_method"))
+    # IMPS / RTGS
+    bank_name: Mapped[str | None] = mapped_column(String(200))
+    account_name: Mapped[str | None] = mapped_column(String(200))  # account holder name
+    account_number: Mapped[str | None] = mapped_column(String(34))
+    ifsc_code: Mapped[str | None] = mapped_column(String(11))
+    branch: Mapped[str | None] = mapped_column(String(200))
+    # UPI
+    upi_id: Mapped[str | None] = mapped_column(String(100))
+    qr_code_key: Mapped[str | None] = mapped_column(String(1000))  # S3 key of the UPI QR image
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=now6())
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=now6(), onupdate=now6())
+
+    @property
+    def missing_fields(self) -> list[str]:
+        return missing_method_fields(
+            self.method, {f: getattr(self, f) for f in DETAIL_FIELDS}, has_qr=bool(self.qr_code_key)
+        )
+
+    @property
+    def is_complete(self) -> bool:
+        return not self.missing_fields
+
+    @property
+    def account_id(self) -> str | None:
+        """What the CRM sends as bank_account_id: the account number, or the UPI ID for UPI."""
+        return self.upi_id if self.method == PaymentMethod.upi else self.account_number
 
 
 class RequestNonce(Base):
@@ -207,7 +276,8 @@ class Deposit(TransactionMixin, Base):
     __table_args__ = (UniqueConstraint("psp_id", "idempotency_key", name="uq_deposit_idempotency"),)
     PREFIX = "DEP"
 
-    bank_account_id: Mapped[str | None] = mapped_column(String(50))  # not set on admin-submitted deposits
+    # The PSP account paid into (account number or UPI ID). Empty on older admin-submitted deposits.
+    bank_account_id: Mapped[str | None] = mapped_column(String(50))
     screenshot_url: Mapped[str] = mapped_column(String(1000))  # S3 key of the uploaded screenshot
     utr_number: Mapped[str | None] = mapped_column(String(100), index=True)
     # How the customer paid. Empty on deposits made before the field existed.

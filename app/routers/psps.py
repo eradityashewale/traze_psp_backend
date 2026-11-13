@@ -3,15 +3,28 @@
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, Request, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Form, Request, status
 from sqlalchemy import exists, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.config import get_settings
 from app.deps import AdminUser, DbSession
 from app.errors import AppError, ErrorCode
-from app.models import OPEN_STATUSES, Deposit, PortalUser, Psp, UserRole, Withdrawal
+from app.models import (
+    DETAIL_FIELDS,
+    OPEN_STATUSES,
+    Deposit,
+    PaymentMethod,
+    PortalUser,
+    Psp,
+    PspPaymentMethod,
+    UserRole,
+    Withdrawal,
+    missing_method_fields,
+)
 from app.schemas import (
+    PaymentMethodOut,
+    PaymentMethodUpsert,
     PspCreate,
     PspCreated,
     PspCredentials,
@@ -62,7 +75,11 @@ def _new_psp_code(db: Session) -> str:
 
 @router.get("", response_model=PspList)
 def list_psps(db: DbSession, _: AdminUser):
-    psps = db.scalars(select(Psp).options(selectinload(Psp.logins)).order_by(Psp.created_at)).all()
+    psps = db.scalars(
+        select(Psp)
+        .options(selectinload(Psp.logins), selectinload(Psp.payment_methods))
+        .order_by(Psp.created_at)
+    ).all()
     return PspList(psps=psps)
 
 
@@ -74,20 +91,29 @@ def create_psp(
     request: Request,
     background_tasks: BackgroundTasks,
 ):
-    """Add a PSP with its bank details, optional payment QR code, and portal login (login_email / login_password).
+    """Add a PSP with its first payment method and its portal login (login_email / login_password).
 
-    Sent as multipart/form-data. The PSP logs in with that login to approve or reject its own
-    deposits and withdrawals. `psp_code` is generated here and returned in the response; it is
+    Sent as multipart/form-data. `payment_method` (imps, rtgs or upi) is required, with that
+    method's details:
+    * imps / rtgs: bank_name, account_name, account_number, ifsc_code, branch
+    * upi: upi_id and qr_code (QR code image), both required; no bank details
+
+    Add the other methods later with `PUT /api/v1/psps/{psp_code}/payment-methods/{method}`.
+
+    The PSP logs in with that login to approve or reject its own deposits and withdrawals. `psp_code` is generated here and returned in the response; it is
     not accepted in the body.
 
     After the PSP is saved, login_email gets a welcome email with the portal link, the login
     email and password, and the steps to change the password (see `welcome_email_queued`).
     """
     psp_code = _new_psp_code(db)
-    psp = Psp(
-        **body.model_dump(exclude={"login_email", "login_password", "qr_code"}),
-        psp_code=psp_code,
-        qr_code_key=upload_qr_code(body.qr_code, psp_code) if body.qr_code else None,
+    psp = Psp(psp_name=body.psp_name, contact_email=body.contact_email, psp_code=psp_code)
+    psp.payment_methods.append(
+        PspPaymentMethod(
+            method=body.payment_method,
+            **body.detail_values(),
+            qr_code_key=upload_qr_code(body.qr_code, psp_code) if body.qr_code else None,
+        )
     )
     creds = _issue_credentials(psp)
     db.add(psp)
@@ -97,7 +123,7 @@ def create_psp(
     )
     db.flush()
     audit(db, "psp.created", actor_type="user", actor_id=admin.id, target=psp.psp_code,
-          details={"login_email": login.email}, request=request)
+          details={"login_email": login.email, "payment_method": body.payment_method.value}, request=request)
     db.refresh(psp)
     db.refresh(login)
     # audit() has committed, so the login exists before the email goes out (after the response).
@@ -128,8 +154,7 @@ def get_psp(psp_code: str, db: DbSession, _: AdminUser):
 def update_psp(psp_code: str, body: PspUpdate, db: DbSession, admin: AdminUser, request: Request):
     psp = _get_psp(db, psp_code)
     changes = body.model_dump(exclude_unset=True)
-    required = ("psp_name", "bank_name", "account_name", "account_number", "ifsc_code", "branch", "status")
-    for field in required:
+    for field in ("psp_name", "status"):
         if field in changes and changes[field] is None:
             raise AppError(ErrorCode.PSP_CONFIG_INVALID, f"{field} cannot be null")
 
@@ -141,32 +166,82 @@ def update_psp(psp_code: str, body: PspUpdate, db: DbSession, admin: AdminUser, 
     return psp
 
 
-@router.put("/{psp_code}/qr-code", response_model=PspOut)
-def set_qr_code(
+def _get_method(psp: Psp, method: PaymentMethod) -> PspPaymentMethod:
+    row = psp.get_method(method)
+    if row is None:
+        raise AppError(ErrorCode.NOT_FOUND, f"{psp.psp_code} has no {method.value} payment method")
+    return row
+
+
+@router.get("/{psp_code}/payment-methods", response_model=list[PaymentMethodOut])
+def list_payment_methods(psp_code: str, db: DbSession, _: AdminUser):
+    return _get_psp(db, psp_code).payment_methods
+
+
+@router.put("/{psp_code}/payment-methods/{method}", response_model=PaymentMethodOut)
+def upsert_payment_method(
     psp_code: str,
-    qr_code: Annotated[UploadFile, File(description="Payment QR code image (PNG, JPEG or WEBP)")],
+    method: PaymentMethod,
+    body: Annotated[PaymentMethodUpsert, Form(media_type="multipart/form-data")],
     db: DbSession,
     admin: AdminUser,
     request: Request,
 ):
-    """Upload or replace the PSP's payment QR code (multipart/form-data, field `qr_code`)."""
+    """Add a payment method to the PSP, or change one it has (multipart/form-data).
+
+    Adding: send every detail the method needs.
+    * imps / rtgs: bank_name, account_name, account_number, ifsc_code, branch
+    * upi: upi_id and qr_code (QR code image), both required; no bank details
+
+    Changing: send only the details to change; the rest stay. A new qr_code replaces the old one.
+    """
     psp = _get_psp(db, psp_code)
-    old_key = psp.qr_code_key
-    psp.qr_code_key = upload_qr_code(qr_code, psp.psp_code)
-    audit(db, "psp.qr_code_updated", actor_type="user", actor_id=admin.id, target=psp.psp_code, request=request)
+    try:
+        body.check_fits(method)
+    except ValueError as e:
+        raise AppError(ErrorCode.PSP_CONFIG_INVALID, str(e))
+
+    row = psp.get_method(method)
+    changes = body.detail_values()
+    current = {f: getattr(row, f) for f in DETAIL_FIELDS} if row else {}
+    has_qr = body.qr_code is not None or bool(row and row.qr_code_key)
+    missing = missing_method_fields(method, {**current, **changes}, has_qr=has_qr)
+    if missing:
+        raise AppError(ErrorCode.PSP_CONFIG_INVALID, f"{method.value} needs {', '.join(missing)}")
+
+    added = row is None
+    if added:
+        row = PspPaymentMethod(method=method)
+        psp.payment_methods.append(row)
+    for field, value in changes.items():
+        setattr(row, field, value)
+    old_key = None
+    if body.qr_code is not None:
+        old_key, row.qr_code_key = row.qr_code_key, upload_qr_code(body.qr_code, psp.psp_code)
+
     db.flush()
+    audit(db, "psp.payment_method_added" if added else "psp.payment_method_updated", actor_type="user",
+          actor_id=admin.id, target=psp.psp_code,
+          details={"method": method.value, **changes, "qr_code_replaced": body.qr_code is not None},
+          request=request)
     delete_object(old_key)
-    db.refresh(psp)
-    return psp
+    db.refresh(row)
+    return row
 
 
-@router.delete("/{psp_code}/qr-code", response_model=PspOut)
-def remove_qr_code(psp_code: str, db: DbSession, admin: AdminUser, request: Request):
+@router.delete("/{psp_code}/payment-methods/{method}", response_model=PspOut)
+def remove_payment_method(psp_code: str, method: PaymentMethod, db: DbSession, admin: AdminUser, request: Request):
+    """Remove a payment method. The PSP's last complete method cannot be removed."""
     psp = _get_psp(db, psp_code)
-    old_key, psp.qr_code_key = psp.qr_code_key, None
-    audit(db, "psp.qr_code_removed", actor_type="user", actor_id=admin.id, target=psp.psp_code, request=request)
+    row = _get_method(psp, method)
+    if row.is_complete and len(psp.ready_methods) == 1:
+        raise AppError(ErrorCode.PSP_CONFIG_INVALID, "A PSP needs at least one complete payment method; add another first")
+    qr_key = row.qr_code_key
+    psp.payment_methods.remove(row)
     db.flush()
-    delete_object(old_key)
+    audit(db, "psp.payment_method_removed", actor_type="user", actor_id=admin.id, target=psp.psp_code,
+          details={"method": method.value}, request=request)
+    delete_object(qr_key)
     db.refresh(psp)
     return psp
 
@@ -258,9 +333,10 @@ def delete_psp(psp_code: str, db: DbSession, admin: AdminUser, request: Request)
             ErrorCode.PSP_HAS_OPEN_TRANSACTIONS,
             "PSP has pending or processing deposits/withdrawals. Deactivate it and resolve them first.",
         )
-    qr_key = psp.qr_code_key
-    db.delete(psp)  # its portal logins are removed by the FK cascade
+    qr_keys = [m.qr_code_key for m in psp.payment_methods if m.qr_code_key]
+    db.delete(psp)  # its portal logins and payment methods are removed by the FK cascade
     audit(db, "psp.deleted", actor_type="user", actor_id=admin.id, target=psp_code, request=request)
     db.flush()
-    delete_object(qr_key)
+    for key in qr_keys:
+        delete_object(key)
     return {"success": True, "message": f"PSP {psp_code} deleted"}

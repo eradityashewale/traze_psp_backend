@@ -22,7 +22,14 @@ from app.models import FINAL_STATUSES, CreatedBy, PortalUser, Psp, TxStatus, Use
 from app.schemas import ApproveRequest, Page, RejectRequest, ReverseRequest
 from app.services.audit import audit
 from app.services.callback import deliver_due, schedule_callback
-from app.services.transactions import Transaction, change_status, create_transaction, ensure_psp_can_accept
+from app.services.transactions import (
+    Transaction,
+    change_status,
+    create_transaction,
+    default_source_account,
+    deposit_method,
+    ensure_psp_can_accept,
+)
 
 
 EXPORT_MAX_ROWS = 100_000
@@ -165,12 +172,15 @@ def build_review_router(
         psp = db.scalar(select(Psp).where(Psp.psp_code == body.psp_code))
         if psp is None:
             raise AppError(ErrorCode.PSP_NOT_FOUND, f"PSP {body.psp_code} not found")
-        ensure_psp_can_accept(psp, None)
+        ensure_psp_can_accept(psp)
 
         data = body.model_dump(exclude={"psp_code", "screenshot"})
+        if kind == "deposit":
+            # The PSP must take the method the customer paid with; record that method's account.
+            data["bank_account_id"] = deposit_method(psp, body.payment_method, None).account_id
         if account_field:
-            # A PSP has one bank account, so the admin does not pick it.
-            data[account_field] = psp.account_number or ""
+            # The admin does not pick the source account; the PSP's first payment method account is used.
+            data[account_field] = default_source_account(psp)
         tx = create_transaction(db, model, psp, data, CreatedBy.admin, body.screenshot)
         audit(db, f"{kind}.submitted", actor_type="user", actor_id=user.id, target=tx.public_id,
               details={"psp_code": psp.psp_code, "source": "admin_portal"}, request=request)

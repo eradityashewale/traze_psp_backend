@@ -14,7 +14,18 @@ from pydantic import (
     model_validator,
 )
 
-from app.models import ChatStatus, CreatedBy, PaymentMethod, PspStatus, TxKind, TxStatus, UserRole
+from app.models import (
+    DETAIL_FIELDS,
+    METHOD_FIELDS,
+    ChatStatus,
+    CreatedBy,
+    PaymentMethod,
+    PspStatus,
+    TxKind,
+    TxStatus,
+    UserRole,
+    missing_method_fields,
+)
 from app.services.storage import attachment_url, qr_code_url as presign_qr_code, view_url
 
 Currency = Literal["INR"]
@@ -118,24 +129,32 @@ class FormModel(BaseModel):
 
 # ---------- PSP management ----------
 
-ACCOUNT_NUMBER_HELP = (
-    "The PSP's one bank account number (digits/letters only, no spaces). Deposits (bank_account_id) "
-    "and withdrawals (source_account_id) must send this value."
-)
+ACCOUNT_NUMBER_HELP = "Bank account number (digits/letters only, no spaces)"
+UPI_ID_RE = re.compile(r"^[A-Za-z0-9._-]{2,256}@[A-Za-z][A-Za-z0-9.-]{1,63}$")
 
 
-class PspBase(BaseModel):
+class PaymentMethodFields(BaseModel):
+    """Details of one payment method. Which ones are needed depends on the method:
+
+    * imps / rtgs: bank_name, account_name, account_number, ifsc_code, branch
+    * upi: upi_id and qr_code (QR code image), both required; no bank details
+    """
+
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    psp_name: str | None = Field(default=None, min_length=1, max_length=200)
     bank_name: str | None = Field(default=None, min_length=1, max_length=200)
-    account_name: str | None = Field(default=None, min_length=1, max_length=200, description="Account holder name")
+    account_name: str | None = Field(
+        default=None, min_length=1, max_length=200, description="Account holder name"
+    )
     account_number: str | None = Field(
         default=None, min_length=6, max_length=34, pattern=r"^[A-Za-z0-9]+$", description=ACCOUNT_NUMBER_HELP
     )
     ifsc_code: str | None = None
     branch: str | None = Field(default=None, min_length=1, max_length=200)
-    contact_email: EmailStr | None = None
+    upi_id: str | None = Field(default=None, max_length=100, description="UPI ID / VPA, e.g. traze@hdfcbank")
+    qr_code: UploadFile | None = Field(
+        default=None, description="UPI only, required there: payment QR code image (PNG, JPEG or WEBP). Stored in S3."
+    )
 
     @field_validator("ifsc_code")
     @classmethod
@@ -146,29 +165,85 @@ class PspBase(BaseModel):
                 raise ValueError("ifsc_code must be an 11-character IFSC code, e.g. HDFC0001234")
         return v
 
+    @field_validator("upi_id")
+    @classmethod
+    def check_upi_id(cls, v: str | None) -> str | None:
+        if v is not None and not UPI_ID_RE.match(v):
+            raise ValueError("upi_id must look like name@bank, e.g. traze@hdfcbank")
+        return v
 
-class PspCreate(FormModel, PspBase):
-    """Sent as multipart/form-data so the QR code image can travel with it."""
+    def detail_values(self) -> dict:
+        """The details that were sent (blank form fields are dropped before this)."""
+        return self.model_dump(include=set(DETAIL_FIELDS), exclude_none=True)
+
+    def check_fits(self, method: PaymentMethod) -> None:
+        """Reject details that do not belong to the method, e.g. upi_id on imps."""
+        allowed = METHOD_FIELDS[method]
+        sent = set(self.detail_values()) | ({"qr_code"} if self.qr_code is not None else set())
+        extra = sorted(sent - set(allowed))
+        if extra:
+            raise ValueError(f"{', '.join(extra)} not used by {method.value}; it takes {', '.join(allowed)}")
+
+
+class PspCreate(FormModel, PaymentMethodFields):
+    """Sent as multipart/form-data so the UPI QR code image can travel with it.
+
+    A PSP is registered with one payment method (payment_method) and that method's details;
+    the other methods are added later with PUT /api/v1/psps/{psp_code}/payment-methods/{method}.
+    """
 
     psp_name: str = Field(min_length=1, max_length=200)
-    bank_name: str = Field(min_length=1, max_length=200)
-    account_name: str = Field(min_length=1, max_length=200, description="Account holder name")
-    account_number: str = Field(
-        min_length=6, max_length=34, pattern=r"^[A-Za-z0-9]+$", description=ACCOUNT_NUMBER_HELP
-    )
-    ifsc_code: str
-    branch: str = Field(min_length=1, max_length=200)
-    qr_code: UploadFile | None = Field(
-        default=None, description="Payment QR code image (PNG, JPEG or WEBP). Stored in S3."
-    )
+    contact_email: EmailStr | None = None
+    payment_method: PaymentMethod = Field(description="The first payment method: imps, rtgs or upi")
     login_email: EmailStr = Field(description="Portal login for this PSP; it reviews its own requests")
     login_password: str = Field(min_length=10, max_length=72)
 
+    @field_validator("payment_method", mode="before")
+    @classmethod
+    def lower_payment_method(cls, v):
+        return v.strip().lower() if isinstance(v, str) else v
 
-class PspUpdate(PspBase):
-    """Only send fields you want to change — others stay as-is. The QR code has its own endpoint."""
+    @model_validator(mode="after")
+    def check_method_details(self):
+        self.check_fits(self.payment_method)
+        missing = missing_method_fields(
+            self.payment_method, self.detail_values(), has_qr=self.qr_code is not None
+        )
+        if missing:
+            raise ValueError(f"{self.payment_method.value} needs {', '.join(missing)}")
+        return self
 
+
+class PaymentMethodUpsert(FormModel, PaymentMethodFields):
+    """Add a method (send all its details) or change one (send only the details to change)."""
+
+
+class PspUpdate(BaseModel):
+    """Only send fields you want to change — others stay as-is. Payment methods have their own endpoints."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    psp_name: str | None = Field(default=None, min_length=1, max_length=200)
+    contact_email: EmailStr | None = None
     status: PspStatus | None = None
+
+
+class PaymentMethodOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    method: PaymentMethod
+    bank_name: str | None
+    account_name: str | None = Field(description="Account holder name")
+    account_number: str | None
+    ifsc_code: str | None
+    branch: str | None
+    upi_id: str | None
+    qr_code_url: Annotated[str | None, AfterValidator(presign_qr_code)] = Field(
+        default=None, validation_alias="qr_code_key", description="Short-lived link to the UPI QR code image"
+    )
+    is_complete: bool = Field(description="All details are set, so deposits can use this method")
+    missing_fields: list[str]
+    updated_at: datetime
 
 
 class PspOut(BaseModel):
@@ -177,14 +252,7 @@ class PspOut(BaseModel):
     psp_code: str
     psp_name: str
     status: PspStatus
-    bank_name: str | None
-    account_name: str | None
-    account_number: str | None
-    ifsc_code: str | None
-    branch: str | None
-    qr_code_url: Annotated[str | None, AfterValidator(presign_qr_code)] = Field(
-        default=None, validation_alias="qr_code_key", description="Short-lived link to the QR code image"
-    )
+    payment_methods: list[PaymentMethodOut] = Field(description="Configured methods (imps, rtgs, upi)")
     contact_email: str | None
     portal_email: str | None = Field(default=None, description="Email the PSP uses to log in to the portal")
     api_token_expires_at: datetime
@@ -307,30 +375,39 @@ class WithdrawalCreate(WithdrawalFields, SignedRequest):
     dest_account_name: str = Field(min_length=1, max_length=200)
 
 
-class PaymentDetailsOut(BaseModel):
-    """Where the customer pays a deposit: the calling PSP's bank account and QR code."""
+class PaymentMethodDetailsOut(BaseModel):
+    """Where the customer pays with one method."""
 
     model_config = ConfigDict(from_attributes=True)
 
-    psp_code: str
-    psp_name: str
+    method: PaymentMethod
     bank_account_id: str = Field(
-        validation_alias="account_number",
-        description="Send this back as bank_account_id on POST /api/v1/deposits",
+        validation_alias="account_id",
+        description="Send this back as bank_account_id on POST /api/v1/deposits with this payment_method "
+        "(the account number, or the UPI ID for upi)",
     )
     bank_name: str | None
-    account_name: str | None = Field(description="Account holder name")
-    account_number: str
+    account_name: str | None = Field(description="Account holder name (null for UPI)")
+    account_number: str | None
     ifsc_code: str | None
     branch: str | None
+    upi_id: str | None
     qr_code_url: Annotated[str | None, AfterValidator(presign_qr_code)] = Field(
         default=None,
         validation_alias="qr_code_key",
-        description="Short-lived link to the payment QR image (S3_URL_EXPIRES_SECONDS), or null when none is set",
+        description="UPI only: short-lived link to the QR image (S3_URL_EXPIRES_SECONDS); null for imps / rtgs",
     )
-    payment_methods: list[PaymentMethod] = Field(default_factory=lambda: list(PaymentMethod))
+
+
+class PaymentDetailsOut(BaseModel):
+    """How the customer can pay a deposit to the calling PSP: one entry per method it takes."""
+
+    psp_code: str
+    psp_name: str
+    payment_methods: list[PaymentMethod] = Field(description="Methods the PSP takes: imps, rtgs and/or upi")
+    methods: list[PaymentMethodDetailsOut]
     currency: Currency = "INR"
-    updated_at: datetime = Field(description="When the PSP's details last changed")
+    updated_at: datetime = Field(description="When the PSP's payment details last changed")
 
 
 class DepositSubmitted(BaseModel):
