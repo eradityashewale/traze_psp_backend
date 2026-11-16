@@ -1,7 +1,7 @@
 """Overview page of the portal.
 
 Used by portal logins (JWT). One endpoint serves both roles, and the token decides the scope:
-* an admin gets the figures across every PSP;
+* an admin or sub admin gets the figures across every PSP;
 * a PSP login gets the same figures for its own PSP's requests only.
 """
 
@@ -49,7 +49,7 @@ def _daily_counts(db, model: type[Transaction], user: PortalUser, first_day: dat
 def _recent(db, model: type[Transaction], kind: TxKind, user: PortalUser, limit: int) -> list[dict]:
     query = (
         select(
-            model.public_id, Psp.psp_code, model.customer_name, model.customer_email,
+            model.public_id, Psp.psp_code, Psp.psp_name, model.customer_name, model.customer_email,
             model.amount, model.currency, model.status, model.created_at,
         )
         .outerjoin(Psp, model.psp_id == Psp.id)
@@ -58,7 +58,8 @@ def _recent(db, model: type[Transaction], kind: TxKind, user: PortalUser, limit:
     )
     return [
         {
-            "id": r.public_id, "kind": kind, "psp_code": r.psp_code, "customer_name": r.customer_name,
+            "id": r.public_id, "kind": kind, "psp_code": r.psp_code, "psp_name": r.psp_name,
+            "customer_name": r.customer_name,
             "customer_email": r.customer_email, "amount": r.amount, "currency": r.currency,
             "status": r.status, "created_at": r.created_at,
         }

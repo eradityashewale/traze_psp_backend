@@ -3,7 +3,8 @@
 Used by portal logins (JWT). Each request has at most one chat:
 * either side starts it by sending the first message, and both sides reply;
 * a PSP login only reaches the chats of its own PSP's requests, an admin reaches all of them;
-* an admin closes the chat once the issue is settled, and can reopen it.
+* an admin closes the chat once the issue is settled, and can reopen it;
+* a sub admin reads every chat from the admins' side but cannot write, and reading leaves the unread state alone.
 """
 
 from datetime import datetime, timezone
@@ -11,7 +12,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Query, Request, status
 from sqlalchemy import func, select
 
-from app.deps import AdminUser, CurrentUser, DbSession
+from app.deps import AdminUser, CurrentUser, DbSession, WriterUser
 from app.errors import AppError, ErrorCode
 from app.models import Chat, ChatMessage, ChatStatus, PortalUser, TxKind, UserRole
 from app.schemas import ChatMessageCreate, ChatMessageOut, ChatOut, ChatSummaryOut, Page
@@ -21,9 +22,14 @@ from app.services.transactions import Transaction
 router = APIRouter(prefix="/api/v1/portal/chats", tags=["Portal · Chat"])
 
 
+def _side(user: PortalUser) -> UserRole:
+    """Which side of the chat a login is on; a sub admin reads from the admins' side."""
+    return UserRole.psp if user.role == UserRole.psp else UserRole.admin
+
+
 def _read_marker(user: PortalUser) -> str:
     """The Chat column holding the last message id this user's side has seen."""
-    return "admin_last_read_id" if user.role == UserRole.admin else "psp_last_read_id"
+    return "admin_last_read_id" if _side(user) == UserRole.admin else "psp_last_read_id"
 
 
 @router.get("", response_model=Page[ChatSummaryOut])
@@ -42,7 +48,7 @@ def list_chats(
         .where(
             ChatMessage.chat_id == Chat.id,
             ChatMessage.id > getattr(Chat, _read_marker(user)),
-            ChatMessage.sender_role != user.role,
+            ChatMessage.sender_role != _side(user),
         )
         .correlate(Chat)
         .scalar_subquery()
@@ -104,14 +110,15 @@ def build_chat_router(model: type[Transaction], kind: TxKind) -> APIRouter:
             .order_by(ChatMessage.id)
         ).all()
         marker = _read_marker(user)
-        if messages and messages[-1].id > getattr(chat, marker):
+        # A sub admin only watches, so its reads do not clear the admins' unread count.
+        if user.role != UserRole.sub_admin and messages and messages[-1].id > getattr(chat, marker):
             setattr(chat, marker, messages[-1].id)
             db.commit()
         chat.messages = messages
         return chat
 
     @chat_router.post("/messages", response_model=ChatMessageOut, status_code=status.HTTP_201_CREATED)
-    def send_message(public_id: str, body: ChatMessageCreate, db: DbSession, user: CurrentUser, request: Request):
+    def send_message(public_id: str, body: ChatMessageCreate, db: DbSession, user: WriterUser, request: Request):
         """Send a message. The first message on a request opens its chat."""
         tx = _get_tx(db, public_id, user, lock=True)
         chat = _get_chat(db, public_id)

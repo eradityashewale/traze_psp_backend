@@ -1,4 +1,4 @@
-"""PSP Management module (guide Section 3). Admin only."""
+"""PSP Management module (guide Section 3). Admin only; a sub admin can read but not change."""
 
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
@@ -8,7 +8,7 @@ from sqlalchemy import exists, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.config import get_settings
-from app.deps import AdminUser, DbSession
+from app.deps import AdminUser, DbSession, StaffUser
 from app.errors import AppError, ErrorCode
 from app.models import (
     DETAIL_FIELDS,
@@ -75,7 +75,7 @@ def _new_psp_code(db: Session) -> str:
 
 
 @router.get("", response_model=PspList)
-def list_psps(db: DbSession, _: AdminUser):
+def list_psps(db: DbSession, _: StaffUser):
     psps = db.scalars(
         select(Psp)
         .options(selectinload(Psp.logins), selectinload(Psp.payment_methods))
@@ -147,7 +147,7 @@ def create_psp(
 
 
 @router.get("/{psp_code}", response_model=PspOut)
-def get_psp(psp_code: str, db: DbSession, _: AdminUser):
+def get_psp(psp_code: str, db: DbSession, _: StaffUser):
     return _get_psp(db, psp_code)
 
 
@@ -175,7 +175,7 @@ def _get_method(psp: Psp, method: PaymentMethod) -> PspPaymentMethod:
 
 
 @router.get("/{psp_code}/payment-methods", response_model=list[PaymentMethodOut])
-def list_payment_methods(psp_code: str, db: DbSession, _: AdminUser):
+def list_payment_methods(psp_code: str, db: DbSession, _: StaffUser):
     return _get_psp(db, psp_code).payment_methods
 
 

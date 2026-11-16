@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: psp_portal
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -proot"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+
+    env:
+      ENVIRONMENT: local
+      DATABASE_URL: mysql://root:root@127.0.0.1:3306/psp_portal
+      JWT_SECRET: ci-only-secret-not-real
+      RUN_MIGRATIONS_ON_STARTUP: "false"
+      BOOTSTRAP_ADMIN_EMAIL: admin@example.com
+      BOOTSTRAP_ADMIN_PASSWORD: ChangeMe123!
+      SMTP_HOST: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install ruff
+
+      - name: Lint (errors only)
+        run: ruff check app --select E9,F63,F7,F82
+
+      - name: Run migrations on a fresh DB
+        run: alembic upgrade head
+
+      - name: Check migrations can roll back
+        run: alembic downgrade base && alembic upgrade head
+
+      - name: Smoke test the app
+        run: |
+          uvicorn app.main:app --port 8000 &
+          sleep 8
+          curl -fsS http://127.0.0.1:8000/health
+          curl -fsS http://127.0.0.1:8000/health/ready

@@ -24,6 +24,7 @@ from app.db_types import BinaryString, UTCDateTime, now6
 class UserRole(str, enum.Enum):
     admin = "admin"  # manages PSPs, views and decides every PSP's requests
     psp = "psp"  # a PSP login: reviews and decides its own PSP's requests
+    sub_admin = "sub_admin"  # read-only admin: sees every PSP and request, changes nothing
 
 
 class PspStatus(str, enum.Enum):
@@ -76,7 +77,7 @@ def _enum(e: type[enum.Enum], name: str) -> Enum:
 
 
 class PortalUser(Base):
-    """A portal login: either an admin, or a login belonging to one PSP."""
+    """A portal login: an admin, a read-only sub admin, or a login belonging to one PSP."""
 
     __tablename__ = "portal_users"
 
@@ -273,6 +274,10 @@ class TransactionMixin:
     @property
     def psp_code(self) -> str | None:
         return self.psp.psp_code if self.psp else None
+
+    @property
+    def psp_name(self) -> str | None:
+        return self.psp.psp_name if self.psp else None
 
     @property
     def reviewed_by(self) -> str | None:

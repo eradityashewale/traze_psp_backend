@@ -1,0 +1,27 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  deploy:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    environment: production        # lets you require manual approval
+    steps:
+      - name: SSH deploy
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd /path/to/traze_psp_backend
+            git pull origin main
+            .venv/bin/pip install -r requirements.txt
+            .venv/bin/alembic upgrade head
+            sudo systemctl restart psp-backend
+            sleep 5 && curl -fsS http://127.0.0.1:8000/health/ready

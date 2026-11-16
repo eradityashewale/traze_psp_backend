@@ -108,7 +108,7 @@ def list_users(db: DbSession, _: AdminUser, psp_code: str | None = None):
 
 @router.post("/users", response_model=UserOut, status_code=status.HTTP_201_CREATED)
 def create_user(body: UserCreate, db: DbSession, admin: AdminUser, request: Request):
-    """Create another admin, or an extra login for an existing PSP."""
+    """Create another admin, a read-only sub admin (`role: sub_admin`), or an extra login for an existing PSP."""
     psp = None
     if body.psp_code:
         psp = db.scalar(select(Psp).where(Psp.psp_code == body.psp_code))
