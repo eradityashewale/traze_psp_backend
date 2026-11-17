@@ -75,7 +75,7 @@ class ChangePasswordRequest(BaseModel):
 
 
 class UserCreate(BaseModel):
-    """Create another admin, or an extra login for an existing PSP."""
+    """Create another admin, a read-only sub admin, or an extra login for an existing PSP."""
 
     email: EmailStr
     full_name: str = Field(min_length=1, max_length=200)
@@ -87,8 +87,8 @@ class UserCreate(BaseModel):
     def psp_code_matches_role(self):
         if self.role == UserRole.psp and not self.psp_code:
             raise ValueError("psp_code is required for a psp login")
-        if self.role == UserRole.admin and self.psp_code:
-            raise ValueError("an admin is not tied to a PSP; leave psp_code empty")
+        if self.role != UserRole.psp and self.psp_code:
+            raise ValueError("an admin or sub admin is not tied to a PSP; leave psp_code empty")
         return self
 
 
@@ -488,6 +488,7 @@ class TransactionOutBase(BaseModel):
 
     id: str = Field(validation_alias="public_id")
     psp_code: str | None
+    psp_name: str | None
     customer_name: str
     customer_email: str
     amount: Decimal
@@ -661,6 +662,7 @@ class RecentTransaction(BaseModel):
     id: str
     kind: TxKind
     psp_code: str | None
+    psp_name: str | None
     customer_name: str
     customer_email: str
     amount: Decimal
@@ -670,7 +672,7 @@ class RecentTransaction(BaseModel):
 
 
 class DashboardOut(BaseModel):
-    role: UserRole  # admin = every PSP's requests, psp = only this login's PSP
+    role: UserRole  # admin / sub_admin = every PSP's requests, psp = only this login's PSP
     full_name: str
     psp_code: str | None  # null for an admin
     psp_name: str | None

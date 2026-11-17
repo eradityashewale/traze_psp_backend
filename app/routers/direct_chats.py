@@ -3,7 +3,8 @@
 Used by portal logins (JWT). Each PSP has one thread:
 * an admin writes to any PSP, a PSP login writes to the admins and only reaches its own thread;
 * a message carries text, an attachment of any file type, or both;
-* the thread is never closed.
+* the thread is never closed;
+* a sub admin reads every thread from the admins' side but cannot write, and reading leaves the unread state alone.
 """
 
 from datetime import datetime, timezone
@@ -12,7 +13,7 @@ from typing import Annotated
 from fastapi import APIRouter, Form, Query, status
 from sqlalchemy import case, func, select, update
 
-from app.deps import CurrentUser, DbSession
+from app.deps import CurrentUser, DbSession, WriterUser
 from app.errors import AppError, ErrorCode
 from app.models import DirectMessage, PortalUser, Psp, UserRole
 from app.schemas import DirectChatOut, DirectChatSummaryOut, DirectMessageCreate, DirectMessageOut, Page
@@ -21,12 +22,17 @@ from app.services.storage import upload_attachment
 router = APIRouter(prefix="/api/v1/portal/direct-chats", tags=["Portal · Direct chat"])
 
 
+def _side(user: PortalUser) -> UserRole:
+    """Which side of the thread a login is on; a sub admin reads from the admins' side."""
+    return UserRole.psp if user.role == UserRole.psp else UserRole.admin
+
+
 def _thread_psp(db, user: PortalUser, psp_code: str | None) -> Psp:
     """The PSP whose thread this call is about: a PSP login's own, or the one an admin names."""
     if user.role == UserRole.psp:
         return user.psp
     if not psp_code:
-        raise AppError(ErrorCode.VALIDATION_ERROR, "psp_code is required for an admin")
+        raise AppError(ErrorCode.VALIDATION_ERROR, "psp_code is required for an admin or sub admin")
     psp = db.scalar(select(Psp).where(Psp.psp_code == psp_code))
     if psp is None:
         raise AppError(ErrorCode.PSP_NOT_FOUND, f"PSP {psp_code} not found")
@@ -42,7 +48,7 @@ def list_direct_chats(
     offset: int = Query(default=0, ge=0),
 ):
     """Inbox: an admin gets one thread per PSP, latest activity first; a PSP login gets its own thread."""
-    is_unread = (DirectMessage.sender_role != user.role) & DirectMessage.read_at.is_(None)
+    is_unread = (DirectMessage.sender_role != _side(user)) & DirectMessage.read_at.is_(None)
     stats = (
         select(
             DirectMessage.psp_id,
@@ -93,7 +99,8 @@ def get_messages(
     else:
         messages = db.scalars(query.order_by(DirectMessage.id.desc()).limit(limit)).all()[::-1]
 
-    if messages:
+    # A sub admin only watches, so its reads do not mark the PSP's messages as read.
+    if messages and user.role != UserRole.sub_admin:
         marked = db.execute(
             update(DirectMessage)
             .where(
@@ -122,7 +129,7 @@ def get_messages(
 def send_message(
     body: Annotated[DirectMessageCreate, Form(media_type="multipart/form-data")],
     db: DbSession,
-    user: CurrentUser,
+    user: WriterUser,
 ):
     """Send a message, an attachment, or both. An admin names the PSP; a PSP login writes to the admins."""
     psp = _thread_psp(db, user, body.psp_code)

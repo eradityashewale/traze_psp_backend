@@ -3,7 +3,8 @@
 Used by portal logins (JWT), not by the CRM:
 * a PSP login sees only its own PSP's requests and approves / rejects them;
 * an admin can view every PSP's requests, submit new ones for a PSP, approve / reject any
-  of them and re-send callbacks.
+  of them and re-send callbacks;
+* a sub admin can view and export every PSP's requests but cannot change any of them.
 """
 
 import csv
@@ -16,7 +17,7 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, Query, Request, Response, status
 from sqlalchemy import func, or_, select
 
-from app.deps import AdminUser, CurrentUser, DbSession
+from app.deps import AdminUser, CurrentUser, DbSession, WriterUser
 from app.errors import AppError, ErrorCode
 from app.models import FINAL_STATUSES, CreatedBy, PortalUser, Psp, TxStatus, UserRole
 from app.schemas import ApproveRequest, Page, RejectRequest, ReverseRequest
@@ -41,7 +42,7 @@ class TxFilters:
     def __init__(
         self,
         status_: TxStatus | None = Query(default=None, alias="status"),
-        psp_code: str | None = Query(default=None, description="Admin only; PSP logins always see their own"),
+        psp_code: str | None = Query(default=None, description="Admin / sub admin only; PSP logins always see their own"),
         currency: str | None = None,
         customer: str | None = Query(default=None, description="Search by customer name or email"),
         callback_failed: bool | None = Query(default=None, description="true = decided but CRM not notified"),
@@ -94,7 +95,7 @@ def build_review_router(
         query = _scoped(select(model), user)
         if f.status:
             query = query.where(model.status == f.status)
-        if f.psp_code and user.role == UserRole.admin:
+        if f.psp_code and user.role != UserRole.psp:
             query = query.join(Psp, model.psp_id == Psp.id).where(Psp.psp_code == f.psp_code)
         if f.currency:
             query = query.where(model.currency == f.currency.upper())
@@ -191,7 +192,7 @@ def build_review_router(
         return _get(db, public_id, user)
 
     @router.post("/{public_id}/processing", response_model=out_schema)
-    def mark_processing(public_id: str, db: DbSession, user: CurrentUser, request: Request):
+    def mark_processing(public_id: str, db: DbSession, user: WriterUser, request: Request):
         """PSP login or admin: claim a pending request to show it is being handled."""
         tx = change_status(db, model, public_id, user, TxStatus.processing)
         audit(db, f"{kind}.processing", actor_type="user", actor_id=user.id, target=public_id, request=request)
@@ -199,7 +200,7 @@ def build_review_router(
 
     @router.post("/{public_id}/approve", response_model=out_schema)
     def approve(
-        public_id: str, body: ApproveRequest, db: DbSession, user: CurrentUser, bg: BackgroundTasks, request: Request
+        public_id: str, body: ApproveRequest, db: DbSession, user: WriterUser, bg: BackgroundTasks, request: Request
     ):
         """Approve a request (a PSP login only its own PSP's, an admin any). The CRM is notified."""
         tx = change_status(db, model, public_id, user, TxStatus.approved, body.comment)
@@ -210,7 +211,7 @@ def build_review_router(
 
     @router.post("/{public_id}/reject", response_model=out_schema)
     def reject(
-        public_id: str, body: RejectRequest, db: DbSession, user: CurrentUser, bg: BackgroundTasks, request: Request
+        public_id: str, body: RejectRequest, db: DbSession, user: WriterUser, bg: BackgroundTasks, request: Request
     ):
         """Reject a request (a PSP login only its own PSP's, an admin any). The reason is sent to the CRM."""
         tx = change_status(db, model, public_id, user, TxStatus.rejected, body.reason)
@@ -221,7 +222,7 @@ def build_review_router(
 
     @router.post("/{public_id}/reverse", response_model=out_schema)
     def reverse(
-        public_id: str, body: ReverseRequest, db: DbSession, user: CurrentUser, bg: BackgroundTasks, request: Request
+        public_id: str, body: ReverseRequest, db: DbSession, user: WriterUser, bg: BackgroundTasks, request: Request
     ):
         """Reverse an approved request. Allowed once per request; the reason is sent to the CRM."""
         tx = change_status(db, model, public_id, user, TxStatus.reversed, body.reason)
@@ -231,7 +232,7 @@ def build_review_router(
         return tx
 
     @router.post("/{public_id}/resend-callback", status_code=status.HTTP_202_ACCEPTED)
-    def resend_callback(public_id: str, db: DbSession, user: CurrentUser, bg: BackgroundTasks, request: Request):
+    def resend_callback(public_id: str, db: DbSession, user: WriterUser, bg: BackgroundTasks, request: Request):
         """Re-send the decision to the CRM, e.g. after all automatic retries failed."""
         tx = _get(db, public_id, user)
         if tx.status not in FINAL_STATUSES:

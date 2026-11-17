@@ -109,7 +109,7 @@ Creating a PSP also creates its portal login (`login_email`, `login_password`). 
 | POST | `/api/v1/auth/logout` | sign out: every access token of this login stops working, on all devices |
 | POST | `/api/v1/auth/change-password` | `{current_password, new_password}` — change your own password. Same call for admins and PSP logins; the token decides whose it is. Signs out every session of the login and returns a new `access_token` to carry on with. |
 | GET | `/api/v1/users?psp_code=` | admin: list logins, optionally for one PSP |
-| POST | `/api/v1/users` | admin: create an admin (`role: admin`) or an extra PSP login (`role: psp`, `psp_code`) |
+| POST | `/api/v1/users` | admin: create an admin (`role: admin`), a read-only sub admin (`role: sub_admin`) or an extra PSP login (`role: psp`, `psp_code`) |
 | PATCH | `/api/v1/users/{id}` | admin: rename, deactivate, reset password, `unlock`. A password reset or a deactivation also signs the login out. |
 | DELETE | `/api/v1/users/{id}` | admin: delete a login (not yourself). Its past reviews, chats and messages stay, unlinked from it. |
 | POST | `/api/v1/users/{id}/revoke-sessions` | admin: sign one login out everywhere |

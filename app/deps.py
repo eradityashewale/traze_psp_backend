@@ -69,6 +69,26 @@ def require_admin(user: CurrentUser) -> PortalUser:
 AdminUser = Annotated[PortalUser, Depends(require_admin)]
 
 
+def require_staff(user: CurrentUser) -> PortalUser:
+    """Admin or sub admin: read-only access across every PSP."""
+    if user.role not in (UserRole.admin, UserRole.sub_admin):
+        raise AppError(ErrorCode.FORBIDDEN, "Admin or sub admin role required")
+    return user
+
+
+StaffUser = Annotated[PortalUser, Depends(require_staff)]
+
+
+def require_writer(user: CurrentUser) -> PortalUser:
+    """Any login that may change data: admin or PSP login, never a sub admin."""
+    if user.role == UserRole.sub_admin:
+        raise AppError(ErrorCode.FORBIDDEN, "Sub admin access is read-only")
+    return user
+
+
+WriterUser = Annotated[PortalUser, Depends(require_writer)]
+
+
 # ---------- CRM calls (API Token + API Secret) ----------
 
 def get_calling_psp(
