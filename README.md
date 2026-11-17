@@ -255,7 +255,8 @@ Files are stored under `screenshots/deposit/` and `screenshots/withdrawal/` in t
 | GET | `/health/ready` | none. DB check, `callbacks_pending`, `callbacks_failed`. Returns 503 if the DB is down. |
 | GET | `/api/v1/meta/error-codes` | none |
 | GET | `/api/v1/meta/public-key` | none. Portal RSA public key (PEM). |
-| GET | `/api/v1/audit-logs` | admin. Filters: `action` (prefix), `target` |
+| GET | `/api/v1/audit-logs` | admin. Filters: `action` (prefix), `target`, `psp_code` |
+| GET | `/api/v1/portal/audit-logs` | PSP login: its own PSP's audit trail (its CRM calls, its logins, its requests and chats, admin changes to the PSP). Filters: `action` (prefix), `target`, `date_from`, `date_to`; paged. IPs only for its own side's actions. |
 
 ## Error format
 

@@ -497,4 +497,8 @@ class AuditLog(Base):
     target: Mapped[str | None] = mapped_column(String(100), index=True)
     details: Mapped[dict | None] = mapped_column(JSON)
     ip_address: Mapped[str | None] = mapped_column(String(64))
+    # The PSP the entry concerns (its CRM, its logins, its requests, or an admin acting on it); set by audit().
+    psp_id: Mapped[int | None] = mapped_column(ForeignKey("psps.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=now6(), index=True)
+
+    __table_args__ = (Index("ix_audit_logs_psp_id", "psp_id", "id"),)
