@@ -1,9 +1,10 @@
 """Portal-side review endpoints, shared by deposits and withdrawals.
 
 Used by portal logins (JWT), not by the CRM:
-* a PSP login sees only its own PSP's requests and approves / rejects them;
-* an admin can view every PSP's requests, submit new ones for a PSP, approve / reject any
-  of them and re-send callbacks;
+* a PSP login sees only its own PSP's requests and is the only one who decides them
+  (processing, approve, reject, reverse);
+* an admin can view every PSP's requests, submit new ones for a PSP and re-send callbacks,
+  but cannot decide them;
 * a sub admin can view and export every PSP's requests but cannot change any of them.
 """
 
@@ -214,7 +215,7 @@ def build_review_router(
         user: AdminUser,
         request: Request,
     ):
-        """Admin: submit a request from the portal for a PSP. That PSP's login or an admin then reviews it."""
+        """Admin: submit a request from the portal for a PSP. That PSP's login then reviews it."""
         psp = db.scalar(select(Psp).where(Psp.psp_code == body.psp_code))
         if psp is None:
             raise AppError(ErrorCode.PSP_NOT_FOUND, f"PSP {body.psp_code} not found")
@@ -225,17 +226,17 @@ def build_review_router(
         return _get(db, public_id, user)
 
     @router.post("/{public_id}/processing", response_model=out_schema)
-    def mark_processing(public_id: str, db: DbSession, user: WriterUser, request: Request):
-        """PSP login or admin: claim a pending request to show it is being handled."""
+    def mark_processing(public_id: str, db: DbSession, user: PspLogin, request: Request):
+        """PSP login: claim one of your pending requests to show it is being handled."""
         tx = change_status(db, model, public_id, user, TxStatus.processing)
         audit(db, f"{kind}.processing", actor_type="user", actor_id=user.id, target=public_id, request=request)
         return tx
 
     @router.post("/{public_id}/approve", response_model=out_schema)
     def approve(
-        public_id: str, body: ApproveRequest, db: DbSession, user: WriterUser, bg: BackgroundTasks, request: Request
+        public_id: str, body: ApproveRequest, db: DbSession, user: PspLogin, bg: BackgroundTasks, request: Request
     ):
-        """Approve a request (a PSP login only its own PSP's, an admin any). The CRM is notified."""
+        """PSP login: approve one of your PSP's requests. The CRM is notified. Admins cannot decide requests."""
         tx = change_status(db, model, public_id, user, TxStatus.approved, body.comment)
         audit(db, f"{kind}.approved", actor_type="user", actor_id=user.id, target=public_id,
               details={"comment": body.comment}, request=request)
@@ -244,9 +245,9 @@ def build_review_router(
 
     @router.post("/{public_id}/reject", response_model=out_schema)
     def reject(
-        public_id: str, body: RejectRequest, db: DbSession, user: WriterUser, bg: BackgroundTasks, request: Request
+        public_id: str, body: RejectRequest, db: DbSession, user: PspLogin, bg: BackgroundTasks, request: Request
     ):
-        """Reject a request (a PSP login only its own PSP's, an admin any). The reason is sent to the CRM."""
+        """PSP login: reject one of your PSP's requests. The reason is sent to the CRM. Admins cannot decide requests."""
         tx = change_status(db, model, public_id, user, TxStatus.rejected, body.reason)
         audit(db, f"{kind}.rejected", actor_type="user", actor_id=user.id, target=public_id,
               details={"reason": body.reason}, request=request)
@@ -255,9 +256,9 @@ def build_review_router(
 
     @router.post("/{public_id}/reverse", response_model=out_schema)
     def reverse(
-        public_id: str, body: ReverseRequest, db: DbSession, user: WriterUser, bg: BackgroundTasks, request: Request
+        public_id: str, body: ReverseRequest, db: DbSession, user: PspLogin, bg: BackgroundTasks, request: Request
     ):
-        """Reverse an approved request. Allowed once per request; the reason is sent to the CRM."""
+        """PSP login: reverse one of your approved requests. Allowed once per request; the reason is sent to the CRM."""
         tx = change_status(db, model, public_id, user, TxStatus.reversed, body.reason)
         audit(db, f"{kind}.reversed", actor_type="user", actor_id=user.id, target=public_id,
               details={"reason": body.reason}, request=request)

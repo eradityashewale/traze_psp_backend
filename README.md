@@ -94,8 +94,8 @@ A database created before migrations existed is adopted automatically on startup
 
 | Role | Who | Can do |
 |---|---|---|
-| `admin` | You (the portal operator) | Add, edit and delete PSPs, manage logins, view **all** deposits and withdrawals, submit a deposit or withdrawal for any PSP from the portal, approve or reject any PSP's requests, audit logs. |
-| `psp` | Each PSP | Log in, see **only its own** deposits and withdrawals, approve or reject them. |
+| `admin` | You (the portal operator) | Add, edit and delete PSPs, manage logins, view **all** deposits and withdrawals, submit a deposit or withdrawal for any PSP from the portal, audit logs. **Cannot** approve, reject, reverse or claim requests: only the PSP decides. |
+| `psp` | Each PSP | Log in, see **only its own** deposits and withdrawals, and is the only one who decides them (processing, approve, reject, reverse). |
 
 Creating a PSP also creates its portal login (`login_email`, `login_password`). A PSP can have more logins via `POST /api/v1/users`. When a PSP is deactivated its logins stop working; when it's deleted its logins are removed.
 
@@ -157,18 +157,18 @@ Every accepted `POST` creates a new record and returns `201`. There is no `idemp
 `INR` is the only currency. A deposit has no `currency` field (CRM API and portal) and is always stored as `INR`. On a withdrawal `currency` defaults to `INR` when it is not sent, and any other value is rejected with `E1000`. A PSP has no currency setting. The `timestamp` on a CRM request is only used for the signature check; the portal records `created_at` itself when the request arrives.
 
 ### Portal review (JWT)
-A PSP login only ever sees and acts on its own PSP's requests. An admin sees all of them, can submit new ones, and can approve or reject any of them. Paths are the same for `deposits` and `withdrawals`:
+A PSP login only ever sees and acts on its own PSP's requests. An admin sees all of them and can submit new ones, but cannot decide them: processing, approve, reject and reverse are for the PSP's own login only (E1009 for anyone else). Paths are the same for `deposits` and `withdrawals`:
 
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/api/v1/portal/deposits` | filters: `status, psp_code (admin only), currency, customer, callback_failed, date_from, date_to, limit, offset` |
 | GET | `/api/v1/portal/deposits/export` | CSV download of every match (no paging), same filters minus `limit/offset`. Same columns as the list, without the screenshot link. Up to 100,000 rows; more returns `E1000`. |
-| POST | `/api/v1/portal/deposits` | admin: submit a request for a PSP. Same fields as the CRM API plus `psp_code`; no `signature`, no `bank_account_id` on a deposit (the account of the chosen `payment_method` is recorded; the PSP must have that method), and no `source_account_id` on a withdrawal (the PSP's first payment method account is used: IMPS, then RTGS, then UPI). Starts as `pending`, and that PSP's login or an admin reviews it. |
+| POST | `/api/v1/portal/deposits` | admin: submit a request for a PSP. Same fields as the CRM API plus `psp_code`; no `signature`, no `bank_account_id` on a deposit (the account of the chosen `payment_method` is recorded; the PSP must have that method), and no `source_account_id` on a withdrawal (the PSP's first payment method account is used: IMPS, then RTGS, then UPI). Starts as `pending`, and that PSP's login reviews it. |
 | GET | `/api/v1/portal/deposits/{id}` | |
-| POST | `/api/v1/portal/deposits/{id}/processing` | admin or PSP login: claim a pending request |
-| POST | `/api/v1/portal/deposits/{id}/approve` | admin or PSP login: `{comment?}` → callback |
-| POST | `/api/v1/portal/deposits/{id}/reject` | admin or PSP login: `{reason}` (required) → callback |
-| POST | `/api/v1/portal/deposits/{id}/reverse` | admin or PSP login: `{reason}` (required). Only an approved request, and only once → callback |
+| POST | `/api/v1/portal/deposits/{id}/processing` | PSP login only: claim a pending request |
+| POST | `/api/v1/portal/deposits/{id}/approve` | PSP login only: `{comment?}` → callback |
+| POST | `/api/v1/portal/deposits/{id}/reject` | PSP login only: `{reason}` (required) → callback |
+| POST | `/api/v1/portal/deposits/{id}/reverse` | PSP login only: `{reason}` (required). Only an approved request, and only once → callback |
 | POST | `/api/v1/portal/deposits/{id}/resend-callback` | admin or PSP login: new delivery cycle |
 
 Status flow: `pending → processing → approved | rejected`, or `pending → approved | rejected` directly. An approved request can be reversed once (`approved → reversed`). Rejected and reversed are final. Rows are locked during a decision, so two logins cannot both decide the same request.

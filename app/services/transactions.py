@@ -125,10 +125,11 @@ def change_status(
     The row is locked so two people can never both decide the same request.
     A final decision also queues the CRM callback in the same DB transaction.
     """
-    # A PSP login can only act on its own PSP's requests; others look like "not found". An admin can act on any.
-    query = select(model).where(model.public_id == public_id)
-    if user.role == UserRole.psp:
-        query = query.where(model.psp_id == user.psp_id)
+    # Only the PSP decides its requests; admins and sub admins cannot. A PSP login only reaches its
+    # own PSP's requests; others look like "not found".
+    if user.role != UserRole.psp:
+        raise AppError(ErrorCode.FORBIDDEN, "Only the PSP's own login can decide its requests")
+    query = select(model).where(model.public_id == public_id, model.psp_id == user.psp_id)
     tx = db.scalar(query.with_for_update())
     if tx is None:
         raise AppError(ErrorCode.TX_NOT_FOUND, f"{public_id} not found")
