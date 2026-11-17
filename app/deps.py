@@ -89,6 +89,16 @@ def require_writer(user: CurrentUser) -> PortalUser:
 WriterUser = Annotated[PortalUser, Depends(require_writer)]
 
 
+def require_psp_login(user: CurrentUser) -> PortalUser:
+    """A PSP's own portal login (its PSP exists and is active, see ensure_psp_login_allowed)."""
+    if user.role != UserRole.psp:
+        raise AppError(ErrorCode.FORBIDDEN, "PSP login required")
+    return user
+
+
+PspLogin = Annotated[PortalUser, Depends(require_psp_login)]
+
+
 # ---------- CRM calls (API Token + API Secret) ----------
 
 def get_calling_psp(

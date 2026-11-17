@@ -24,6 +24,7 @@ from app.models import (
     TxKind,
     TxStatus,
     UserRole,
+    WalletEntryType,
     missing_method_fields,
 )
 from app.services.storage import attachment_url, qr_code_url as presign_qr_code, view_url
@@ -374,7 +375,8 @@ class DepositCreate(DepositFields, SignedRequest):
 
 
 class WithdrawalCreate(WithdrawalFields, SignedRequest):
-    source_account_id: str = Field(min_length=1, max_length=50)
+    """CRM withdrawal. No source account: the PSP's first payment method account is used."""
+
     dest_bank_name: str = Field(min_length=1, max_length=200)
     dest_account_number: str = Field(min_length=4, max_length=50, pattern=r"^[A-Za-z0-9]+$")
     dest_ifsc: str
@@ -452,6 +454,55 @@ class WithdrawalStatusOut(BaseModel):
     created_at: datetime
 
 
+class BalanceOut(BaseModel):
+    """A PSP wallet. available_balance = balance - held."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    psp_code: str
+    psp_name: str
+    currency: str
+    balance: Decimal  # approved deposits - approved withdrawals
+    held: Decimal  # pending + processing withdrawals, reserved against the balance
+    available_balance: Decimal  # the most a new withdrawal can be
+    updated_at: datetime
+
+
+class WalletTotals(BaseModel):
+    balance: Decimal
+    held: Decimal
+    available_balance: Decimal
+
+
+class WalletList(BaseModel):
+    items: list[BalanceOut]
+    total: int
+    limit: int
+    offset: int
+    totals: WalletTotals  # across every PSP, not only this page
+
+
+class WalletTransactionOut(BaseModel):
+    """One wallet movement. amount is always positive; entry_type gives the direction."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    psp_code: str | None
+    psp_name: str | None
+    entry_type: WalletEntryType
+    amount: Decimal
+    balance_before: Decimal
+    balance_after: Decimal
+    held_before: Decimal
+    held_after: Decimal
+    reference: str | None  # DEP-/WDL- id of the request that caused it
+    actor_type: str | None
+    actor_id: str | None
+    note: str | None
+    created_at: datetime
+
+
 # ---------- portal (review) ----------
 
 class ApproveRequest(BaseModel):
@@ -466,21 +517,31 @@ class ReverseRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=2000, description="Always sent to the CRM in the callback")
 
 
-class AdminDepositCreate(DepositFields):
-    """Admin submits a deposit from the portal on behalf of a PSP (no CRM signature)."""
+class PspDepositCreate(DepositFields):
+    """A PSP login submits a deposit from the portal for its own PSP (no CRM signature)."""
 
-    psp_code: str = Field(description="PSP that will review this deposit")
     screenshot: UploadFile = Field(description="Screenshot file (PNG, JPEG, WEBP or PDF). Stored in S3.")
 
 
-class AdminWithdrawalCreate(WithdrawalFields):
-    """Admin submits a withdrawal from the portal on behalf of a PSP (no CRM signature)."""
+class AdminDepositCreate(PspDepositCreate):
+    """Admin submits a deposit from the portal on behalf of a PSP (no CRM signature)."""
 
-    psp_code: str = Field(description="PSP that will review this withdrawal")
+    psp_code: str = Field(description="PSP that will review this deposit")
+
+
+class PspWithdrawalCreate(WithdrawalFields):
+    """A PSP login submits a withdrawal from the portal for its own PSP (no CRM signature)."""
+
     dest_bank_name: str | None = Field(default=None, min_length=1, max_length=200)
     dest_account_number: str | None = Field(default=None, min_length=4, max_length=50, pattern=r"^[A-Za-z0-9]+$")
     dest_ifsc: str | None = None
     dest_account_name: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class AdminWithdrawalCreate(PspWithdrawalCreate):
+    """Admin submits a withdrawal from the portal on behalf of a PSP (no CRM signature)."""
+
+    psp_code: str = Field(description="PSP that will review this withdrawal")
 
 
 class TransactionOutBase(BaseModel):
@@ -494,7 +555,7 @@ class TransactionOutBase(BaseModel):
     amount: Decimal
     currency: str
     comment: str | None
-    created_by: CreatedBy  # admin = submitted from the portal, crm = submitted through the CRM API
+    created_by: CreatedBy  # admin / psp = submitted from the portal by that login, crm = through the CRM API
     status: TxStatus
     review_comment: str | None
     reviewed_by: str | None

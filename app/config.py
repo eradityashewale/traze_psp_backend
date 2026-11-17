@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     # --- API credentials (checklist 3 / 5) ---
     api_token_validity_days: int = 90  # quarterly rotation
     rotation_grace_hours: int = 72  # old token keeps working this long after a rotation
+    # How many PSPs may exist (MAX_PSPS). 0 = no limit. Raise it to allow more PSPs; no migration needed.
+    max_psps: int = 1
 
     # --- HMAC-SHA256 signature (checklist 6) ---
     require_signature: bool = True

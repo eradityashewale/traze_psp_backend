@@ -28,7 +28,7 @@ from app.security import compute_signature  # noqa: E402
 
 SIGNED_FIELDS = {
     "deposit": ["amount", "bank_account_id", "customer_email"],
-    "withdrawal": ["amount", "currency", "customer_email", "dest_account_number", "source_account_id"],
+    "withdrawal": ["amount", "currency", "customer_email", "dest_account_number"],
 }
 PATHS = {"deposit": "/api/v1/deposits", "withdrawal": "/api/v1/withdrawals"}
 

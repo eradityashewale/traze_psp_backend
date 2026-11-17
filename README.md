@@ -234,7 +234,7 @@ Deposits and withdrawals are submitted as **`multipart/form-data`** (not JSON), 
 * Deposit: the `screenshot` file is required, on the CRM API and when an admin submits from the portal.
 * Withdrawal: the `screenshot` file is optional.
 
-A deposit also needs `payment_method`: `imps`, `rtgs` or `upi` (any case), on the CRM API and when an admin submits from the portal. The PSP must have that method set up (`E2009` otherwise), and on the CRM API `bank_account_id` must be that method's account (`E2003` otherwise). `payment_method` is not part of the signature, and portal responses include it. A withdrawal's `source_account_id` can be any of the PSP's payment method accounts.
+A deposit also needs `payment_method`: `imps`, `rtgs` or `upi` (any case), on the CRM API and when an admin submits from the portal. The PSP must have that method set up (`E2009` otherwise), and on the CRM API `bank_account_id` must be that method's account (`E2003` otherwise). `payment_method` is not part of the signature, and portal responses include it. A withdrawal has no `source_account_id` field, on the CRM API or the portal: the PSP's first payment method account is recorded (IMPS, then RTGS, then UPI).
 
 ```bash
 curl -X POST https://<host>/api/v1/deposits \
@@ -289,7 +289,7 @@ signature = HMAC-SHA256(key = <SIGNATURE_SALT>, message = "k1=v1&k2=v2&...")   #
 | Request | Signed fields |
 |---|---|
 | Deposit | `amount, bank_account_id, customer_email, method, nonce, path, timestamp` |
-| Withdrawal | `amount, currency, customer_email, dest_account_number, method, nonce, path, source_account_id, timestamp` |
+| Withdrawal | `amount, currency, customer_email, dest_account_number, method, nonce, path, timestamp` |
 
 `method` is `POST`. `path` is the API path without host or proxy prefix: `/api/v1/deposits` or `/api/v1/withdrawals`. Amounts are written without trailing zeros (`12500`, `999.5`). Example message for a deposit:
 

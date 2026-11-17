@@ -5,6 +5,7 @@ from decimal import Decimal
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     Enum,
     ForeignKey,
     Index,
@@ -56,6 +57,7 @@ class PaymentMethod(str, enum.Enum):
 class CreatedBy(str, enum.Enum):
     admin = "admin"  # submitted by an admin from the portal
     crm = "crm"  # submitted by the CRM through the API
+    psp = "psp"  # submitted by a PSP login from the portal, for its own PSP
 
 
 class TxKind(str, enum.Enum):
@@ -151,6 +153,9 @@ class Psp(Base):
         cascade="all, delete-orphan", passive_deletes=True, order_by="PspPaymentMethod.method", lazy="select"
     )
 
+    # One wallet per PSP; created with the PSP. Loaded only when accessed.
+    wallet: Mapped["PspWallet | None"] = relationship(back_populates="psp", uselist=False, lazy="select")
+
     def get_method(self, method: PaymentMethod) -> "PspPaymentMethod | None":
         return next((m for m in self.payment_methods if m.method == method), None)
 
@@ -221,6 +226,90 @@ class PspPaymentMethod(Base):
     def account_id(self) -> str | None:
         """What the CRM sends as bank_account_id: the account number, or the UPI ID for UPI."""
         return self.upi_id if self.method == PaymentMethod.upi else self.account_number
+
+
+class WalletEntryType(str, enum.Enum):
+    opening_balance = "opening_balance"  # set once when wallets were introduced
+    deposit_credit = "deposit_credit"  # deposit approved: balance +
+    deposit_reversal = "deposit_reversal"  # approved deposit reversed: balance -
+    withdrawal_hold = "withdrawal_hold"  # withdrawal submitted: held +
+    withdrawal_release = "withdrawal_release"  # withdrawal rejected: held -
+    withdrawal_debit = "withdrawal_debit"  # withdrawal approved: balance - and held -
+    withdrawal_reversal = "withdrawal_reversal"  # approved withdrawal reversed: balance +
+
+
+class PspWallet(Base):
+    """A PSP's money: balance from approved deposits minus approved withdrawals.
+
+    held = pending / processing withdrawals, reserved so they cannot be spent twice.
+    Only app.services.wallet changes these numbers, always together with a ledger row.
+    """
+
+    __tablename__ = "psp_wallets"
+    __table_args__ = (
+        CheckConstraint("balance >= 0", name="ck_psp_wallets_balance"),
+        CheckConstraint("held >= 0", name="ck_psp_wallets_held"),
+        CheckConstraint("held <= balance", name="ck_psp_wallets_held_le_balance"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    psp_id: Mapped[int] = mapped_column(ForeignKey("psps.id", ondelete="CASCADE"), unique=True)
+    currency: Mapped[str] = mapped_column(String(3), default="INR", server_default="INR")
+    balance: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"), server_default="0")
+    held: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0.00"), server_default="0")
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=now6())
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=now6(), onupdate=now6())
+
+    psp: Mapped[Psp] = relationship(back_populates="wallet", lazy="selectin")
+
+    @property
+    def available_balance(self) -> Decimal:
+        return self.balance - self.held
+
+    @property
+    def psp_code(self) -> str:
+        return self.psp.psp_code
+
+    @property
+    def psp_name(self) -> str:
+        return self.psp.psp_name
+
+
+class PspWalletTransaction(Base):
+    """One movement of a PSP wallet. Append-only: never updated or deleted by the app."""
+
+    __tablename__ = "psp_wallet_transactions"
+    __table_args__ = (
+        UniqueConstraint("entry_type", "deposit_id", name="uq_wallet_tx_deposit"),
+        UniqueConstraint("entry_type", "withdrawal_id", name="uq_wallet_tx_withdrawal"),
+        Index("ix_wallet_tx_wallet_created", "wallet_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    wallet_id: Mapped[int] = mapped_column(ForeignKey("psp_wallets.id", ondelete="CASCADE"))
+    entry_type: Mapped[WalletEntryType] = mapped_column(_enum(WalletEntryType, "wallet_entry_type"))
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))  # always positive; entry_type says the direction
+    balance_before: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    balance_after: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    held_before: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    held_after: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    deposit_id: Mapped[int | None] = mapped_column(ForeignKey("deposits.id", ondelete="SET NULL"))
+    withdrawal_id: Mapped[int | None] = mapped_column(ForeignKey("withdrawals.id", ondelete="SET NULL"))
+    reference: Mapped[str | None] = mapped_column(String(20))  # DEP-/WDL- id, kept if the request row goes
+    actor_type: Mapped[str | None] = mapped_column(String(10))  # "user" (portal) or "psp" (CRM API)
+    actor_id: Mapped[str | None] = mapped_column(String(50))
+    note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, server_default=now6())
+
+    wallet: Mapped[PspWallet] = relationship(lazy="selectin")
+
+    @property
+    def psp_code(self) -> str | None:
+        return self.wallet.psp.psp_code if self.wallet and self.wallet.psp else None
+
+    @property
+    def psp_name(self) -> str | None:
+        return self.wallet.psp.psp_name if self.wallet and self.wallet.psp else None
 
 
 class RequestNonce(Base):

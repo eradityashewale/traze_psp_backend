@@ -4,10 +4,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Form, Request, status
-from sqlalchemy import exists, select
+from sqlalchemy import exists, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from app.config import get_settings
+from app.database import engine
 from app.deps import AdminUser, DbSession, StaffUser
 from app.errors import AppError, ErrorCode
 from app.models import (
@@ -41,6 +42,7 @@ from app.services.audit import audit
 from app.services.mailer import mail_enabled, send_psp_welcome_email
 from app.services.storage import delete_object, upload_qr_code
 from app.services.users import new_portal_user
+from app.services.wallet import new_wallet
 
 router = APIRouter(prefix="/api/v1/psps", tags=["PSP Management"])
 
@@ -72,6 +74,23 @@ def _new_psp_code(db: Session) -> str:
         if not db.scalar(select(exists().where(Psp.psp_code == code))):
             return code
     raise AppError(ErrorCode.PSP_ALREADY_EXISTS, "Could not generate a unique PSP code, try again")
+
+
+CREATE_LOCK = "psp_portal.create_psp"
+
+
+def _ensure_psp_limit(db: Session) -> None:
+    """Refuse a new PSP once MAX_PSPS exist (0 = no limit). Call while holding CREATE_LOCK."""
+    limit = get_settings().max_psps
+    if limit <= 0:
+        return
+    # Locking read: sees PSPs committed after this request's snapshot began.
+    count = len(db.scalars(select(Psp.id).with_for_update(read=True)).all())
+    if count >= limit:
+        raise AppError(
+            ErrorCode.PSP_LIMIT_REACHED,
+            f"Only {limit} PSP{'s' if limit != 1 else ''} can be added; another PSP cannot be added",
+        )
 
 
 @router.get("", response_model=PspList)
@@ -106,7 +125,23 @@ def create_psp(
 
     After the PSP is saved, login_email gets a welcome email with the portal link, the login
     email and password, and the steps to change the password (see `welcome_email_queued`).
+
+    At most MAX_PSPS PSPs can exist (default 1); past that this fails with E2010.
+    The PSP gets an empty wallet (see /api/v1/portal/balance).
     """
+    # A MySQL named lock makes concurrent creates wait for each other, so the limit check holds.
+    # It lives on its own connection: the session hands its connection back to the pool on commit.
+    with engine.connect() as lock_conn:
+        if not lock_conn.scalar(text("SELECT GET_LOCK(:n, 10)"), {"n": CREATE_LOCK}):
+            raise AppError(ErrorCode.SERVICE_UNAVAILABLE, "Another PSP is being added; try again")
+        try:
+            return _create_psp(body, db, admin, request, background_tasks)
+        finally:
+            lock_conn.execute(text("SELECT RELEASE_LOCK(:n)"), {"n": CREATE_LOCK})
+
+
+def _create_psp(body: PspCreate, db: Session, admin: PortalUser, request: Request, background_tasks: BackgroundTasks):
+    _ensure_psp_limit(db)
     psp_code = _new_psp_code(db)
     psp = Psp(psp_name=body.psp_name, contact_email=body.contact_email, psp_code=psp_code)
     psp.payment_methods.append(
@@ -116,6 +151,7 @@ def create_psp(
             qr_code_key=upload_qr_code(body.qr_code, psp_code) if body.qr_code else None,
         )
     )
+    new_wallet(psp)
     creds = _issue_credentials(psp)
     db.add(psp)
     login = new_portal_user(

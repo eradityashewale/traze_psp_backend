@@ -8,10 +8,11 @@ from app.deps import CallingPsp, DbSession, VerifiedPsp
 from app.errors import AppError, ErrorCode
 from app.models import CreatedBy, Deposit, TxKind
 from app.routers.chats import build_chat_router
-from app.routers.review import build_review_router
+from app.routers.review import build_psp_submit_router, build_review_router
 from app.schemas import (
     SIGNING_FIELDS,
     AdminDepositCreate,
+    PspDepositCreate,
     DepositCreate,
     DepositOut,
     DepositStatusOut,
@@ -25,6 +26,7 @@ from app.services.transactions import create_transaction, deposit_method, ensure
 
 router = APIRouter(prefix="/api/v1/deposits", tags=["CRM · Deposits"])
 review_router = build_review_router(Deposit, DepositOut, AdminDepositCreate, "deposit")
+psp_submit_router = build_psp_submit_router(Deposit, DepositOut, PspDepositCreate, "deposit")
 chat_router = build_chat_router(Deposit, TxKind.deposit)
 
 

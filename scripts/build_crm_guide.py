@@ -187,7 +187,7 @@ TABLE([1, 1, 2], ["Item", "Looks like", "Used for"],
       ["`api_secret`", "`psps_...`", "`X-API-Secret` header"],
       ["`signature_salt`", "64 hex characters", "Key for the HMAC signature on your requests and on our callbacks"],
       ["PSP account", "account number or UPI ID",
-       "Sent as `bank_account_id` on a deposit and `source_account_id` on a withdrawal. Each payment method "
+       "Sent as `bank_account_id` on a deposit (not needed on a withdrawal). Each payment method "
        "(IMPS, RTGS, UPI) has its own; the payment details call (section 7) returns them."])
 BULLETS(
     "The API token and secret expire every 90 days. We send you a new pair before that.",
@@ -377,7 +377,7 @@ STEPS(
 TABLE([1, 4.5], ["Request", "Signed fields (already in alphabetical order)"],
       ["Deposit", "`amount`, `bank_account_id`, `customer_email`, `method`, `nonce`, `path`, `timestamp`"],
       ["Withdrawal", "`amount`, `currency`, `customer_email`, `dest_account_number`, `method`, `nonce`, `path`, "
-                     "`source_account_id`, `timestamp`"])
+                     "`timestamp`"])
 P("Rules that cause most signature failures:")
 BULLETS(
     "`method` is `POST`.",
@@ -537,7 +537,6 @@ TABLE([1.3, 0.6, 3], ["Field", "Required", "Notes"],
       ["`customer_name`", "Yes", "Up to 200 characters"],
       ["`customer_email`", "Yes", "Valid email address"],
       ["`amount`", "Yes", "Greater than 0, at most 2 decimal places"],
-      ["`source_account_id`", "Yes", "The PSP account number we gave you"],
       ["`dest_bank_name`", "Yes", "Customer's bank name"],
       ["`dest_account_number`", "Yes", "Customer's account: 4 to 50 letters or digits, no spaces"],
       ["`dest_ifsc`", "Yes", "IFSC (11 characters) or SWIFT/BIC (8 or 11 characters)"],
@@ -550,7 +549,7 @@ CODE("""
 curl -X POST https://<portal-host>/api/v1/withdrawals \\
   -H "Authorization: Bearer <api_token>" -H "X-API-Secret: <api_secret>" \\
   -F customer_name="Rahul Sharma" -F customer_email=rahul@example.com \\
-  -F amount=5000 -F source_account_id=50100123456789 \\
+  -F amount=5000 \\
   -F dest_bank_name="HDFC Bank" -F dest_account_number=123456789012 \\
   -F dest_ifsc=HDFC0001234 -F dest_account_name="Rahul Sharma" \\
   -F timestamp=1791625500 -F nonce=7a1c9e2b4d6f4a8c9b0d1e2f3a4b5c6d \\
@@ -594,10 +593,12 @@ TABLE([0.75, 0.45, 2.2, 2.1], ["Code", "HTTP", "Meaning", "What to do"],
       ["`E1014`", "401", "API token revoked", "Ask us for new credentials"],
       ["`E2001`", "403", "PSP is inactive", "Contact us"],
       ["`E2003`", "422", "Account does not belong to this PSP, or not to the `payment_method` sent",
-       "Check `bank_account_id` / `source_account_id`, and that you used the same PSP's credentials"],
+       "Check `bank_account_id`, and that you used the same PSP's credentials"],
       ["`E2008`", "409", "PSP has no payment method set up yet", "Do not offer deposits through this PSP; tell us"],
       ["`E2009`", "422", "PSP does not take this `payment_method`",
        "Only offer the methods listed in the payment details"],
+      ["`E2011`", "422", "Withdrawal is more than the PSP's available balance",
+       "Check `GET /api/v1/balance`; retry when the balance allows it"],
       ["`E3001`", "404", "ID not found for this PSP", "Check the ID and the credentials used"],
       ["`E3004`", "422", "Screenshot type or size not accepted", "PNG, JPEG, WEBP or PDF, up to 5 MB"],
       ["`E5000` to `E5002`", "500 / 503", "Problem on our side", "Retry later; contact us if it continues"])

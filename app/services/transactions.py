@@ -19,10 +19,12 @@ from app.models import (
     PspStatus,
     TxStatus,
     UserRole,
+    WalletEntryType,
     Withdrawal,
 )
 from app.services.callback import schedule_callback
 from app.services.storage import upload_screenshot
+from app.services.wallet import lock_wallet, post, post_status_change, wallet_figures
 
 Transaction = Deposit | Withdrawal
 
@@ -53,14 +55,8 @@ def deposit_method(psp: Psp, method: PaymentMethod, bank_account_id: str | None)
     return row
 
 
-def ensure_source_account(psp: Psp, account_id: str) -> None:
-    """A withdrawal's source_account_id must be one of the PSP's payment method accounts."""
-    if account_id not in {m.account_id for m in psp.ready_methods}:
-        raise AppError(ErrorCode.BANK_ACCOUNT_NOT_ALLOWED, f"Bank account {account_id} is not managed by this PSP")
-
-
 def default_source_account(psp: Psp) -> str:
-    """Account an admin-submitted withdrawal is paid from: IMPS first, then RTGS, then UPI."""
+    """Account a withdrawal is paid from (none is sent by the CRM or the portal): IMPS, then RTGS, then UPI."""
     ready = psp.ready_methods
     return ready[0].account_id if ready else ""
 
@@ -72,19 +68,38 @@ def create_transaction(
     data: dict[str, Any],
     created_by: CreatedBy,
     screenshot: UploadFile | None = None,
+    actor_id: int | None = None,
 ) -> Transaction:
     """Insert a new pending transaction.
 
-    created_by records who submitted it: the CRM through the API, or an admin from the portal.
-    An attached screenshot is stored in S3 and its key saved as screenshot_url.
+    created_by records who submitted it: the CRM through the API, or an admin from the portal
+    (actor_id = the admin's user id). An attached screenshot is stored in S3 and its key saved as
+    screenshot_url. A withdrawal holds its amount in the PSP's wallet (E2011 if not available).
     """
+    is_withdrawal = model is Withdrawal
+    if is_withdrawal:
+        # Fail before uploading anything; the locked check below is the one that counts.
+        wallet = psp.wallet
+        if wallet is not None and data["amount"] > wallet.available_balance:
+            raise AppError(
+                ErrorCode.INSUFFICIENT_BALANCE,
+                f"Withdrawal of {data['amount']} INR is more than the available balance of "
+                f"{wallet.available_balance} INR",
+                details=wallet_figures(wallet),
+            )
     if screenshot is not None:
         folder = "deposit" if model is Deposit else "withdrawal"
         data = {**data, "screenshot_url": upload_screenshot(screenshot, folder)}
+    wallet = lock_wallet(db, psp.id) if is_withdrawal else None
     tx = model(**data, psp_id=psp.id, status=TxStatus.pending, created_by=created_by)
     db.add(tx)
     db.flush()
     tx.public_id = f"{model.PREFIX}-{tx.id:05d}"
+    if wallet is not None:
+        if created_by == CreatedBy.crm:
+            post(db, wallet, WalletEntryType.withdrawal_hold, tx, actor_type="psp", actor_id=psp.psp_code)
+        else:
+            post(db, wallet, WalletEntryType.withdrawal_hold, tx, actor_type="user", actor_id=actor_id)
     db.commit()
     db.refresh(tx)
     return tx
@@ -128,6 +143,8 @@ def change_status(
         raise AppError(ErrorCode.TX_ALREADY_FINAL, f"{public_id} is already {tx.status.value}")
     if new_status == TxStatus.processing and tx.status != TxStatus.pending:
         raise AppError(ErrorCode.TX_INVALID_TRANSITION, f"{public_id} is already {tx.status.value}")
+    # Move the money in the PSP's wallet; saved by the same commit as the status (E2011 stops both).
+    post_status_change(db, tx, tx.status, new_status, user, comment)
 
     tx.status = new_status
     tx.reviewed_by_id = user.id

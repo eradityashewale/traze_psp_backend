@@ -39,6 +39,8 @@ class ErrorCode(Enum):
     PSP_CONFIG_INVALID = ("E2007", 422, "Invalid PSP configuration")
     PSP_NO_BANK_DETAILS = ("E2008", 409, "PSP has no payment method set up yet, so it cannot take deposits")
     PAYMENT_METHOD_NOT_AVAILABLE = ("E2009", 422, "PSP does not accept this payment method")
+    PSP_LIMIT_REACHED = ("E2010", 409, "A PSP already exists; another PSP cannot be added")
+    INSUFFICIENT_BALANCE = ("E2011", 422, "PSP balance is too low for this withdrawal")
     TX_NOT_FOUND = ("E3001", 404, "Transaction not found")
     TX_ALREADY_FINAL = ("E3002", 409, "Transaction is already approved, rejected or reversed")
     TX_INVALID_TRANSITION = ("E3003", 409, "Status change not allowed")

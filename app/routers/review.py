@@ -17,7 +17,7 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, Query, Request, Response, status
 from sqlalchemy import func, or_, select
 
-from app.deps import AdminUser, CurrentUser, DbSession, WriterUser
+from app.deps import AdminUser, CurrentUser, DbSession, PspLogin, WriterUser
 from app.errors import AppError, ErrorCode
 from app.models import FINAL_STATUSES, CreatedBy, PortalUser, Psp, TxStatus, UserRole
 from app.schemas import ApproveRequest, Page, RejectRequest, ReverseRequest
@@ -75,6 +75,51 @@ def _csv_cell(value) -> str:
     if text and text[0] in "=+-@\t\r":
         text = "'" + text
     return text
+
+
+def submit_from_portal(
+    db, model: type[Transaction], kind: str, account_field: str | None, psp: Psp, body,
+    user: PortalUser, created_by: CreatedBy, request: Request,
+) -> Transaction:
+    """Create a pending request from the portal (an admin for any PSP, or a PSP login for its own)."""
+    ensure_psp_can_accept(psp)
+    data = body.model_dump(exclude={"psp_code", "screenshot"})
+    if kind == "deposit":
+        # The PSP must take the method the customer paid with; record that method's account.
+        data["bank_account_id"] = deposit_method(psp, body.payment_method, None).account_id
+    if account_field:
+        # Not picked in the portal; the PSP's first payment method account is used.
+        data[account_field] = default_source_account(psp)
+    tx = create_transaction(db, model, psp, data, created_by, body.screenshot, actor_id=user.id)
+    source = "admin_portal" if created_by == CreatedBy.admin else "psp_portal"
+    audit(db, f"{kind}.submitted", actor_type="user", actor_id=user.id, target=tx.public_id,
+          details={"psp_code": psp.psp_code, "source": source}, request=request)
+    return tx
+
+
+def build_psp_submit_router(
+    model: type[Transaction], out_schema: type, create_schema: type, kind: str, account_field: str | None = None
+) -> APIRouter:
+    """POST /api/v1/portal/psp/{kind}s: a PSP login submits a request for its own PSP."""
+    router = APIRouter(prefix="/api/v1/portal/psp", tags=["Portal · PSP requests"])
+
+    @router.post(f"/{kind}s", response_model=out_schema, status_code=status.HTTP_201_CREATED)
+    def submit(
+        body: Annotated[create_schema, Form(media_type="multipart/form-data")],
+        db: DbSession,
+        user: PspLogin,
+        request: Request,
+    ):
+        tx = submit_from_portal(db, model, kind, account_field, user.psp, body, user, CreatedBy.psp, request)
+        return tx
+
+    submit.__doc__ = (
+        f"PSP login: submit a {kind} for your own PSP (multipart/form-data). It starts as pending and is "
+        "reviewed like any other request; created_by is psp."
+        + (" The amount is held in the PSP wallet; E2011 if the available balance is too low."
+           if kind == "withdrawal" else "")
+    )
+    return router
 
 
 def build_review_router(
@@ -173,19 +218,7 @@ def build_review_router(
         psp = db.scalar(select(Psp).where(Psp.psp_code == body.psp_code))
         if psp is None:
             raise AppError(ErrorCode.PSP_NOT_FOUND, f"PSP {body.psp_code} not found")
-        ensure_psp_can_accept(psp)
-
-        data = body.model_dump(exclude={"psp_code", "screenshot"})
-        if kind == "deposit":
-            # The PSP must take the method the customer paid with; record that method's account.
-            data["bank_account_id"] = deposit_method(psp, body.payment_method, None).account_id
-        if account_field:
-            # The admin does not pick the source account; the PSP's first payment method account is used.
-            data[account_field] = default_source_account(psp)
-        tx = create_transaction(db, model, psp, data, CreatedBy.admin, body.screenshot)
-        audit(db, f"{kind}.submitted", actor_type="user", actor_id=user.id, target=tx.public_id,
-              details={"psp_code": psp.psp_code, "source": "admin_portal"}, request=request)
-        return tx
+        return submit_from_portal(db, model, kind, account_field, psp, body, user, CreatedBy.admin, request)
 
     @router.get("/{public_id}", response_model=out_schema)
     def get_item(public_id: str, db: DbSession, user: CurrentUser):
