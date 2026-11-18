@@ -8,7 +8,7 @@ from sqlalchemy import func, select, text
 
 from app.config import get_settings
 from app.database import SessionLocal
-from app.deps import AdminUser, DbSession, PspLogin
+from app.deps import DbSession, PspLogin, StaffUser
 from app.errors import ErrorCode, error_catalog
 from app.models import FINAL_STATUSES, AuditLog, Deposit, PortalUser, Psp, Withdrawal
 from app.services.keys import portal_public_key_pem
@@ -74,13 +74,14 @@ def public_key():
 @router.get("/api/v1/audit-logs")
 def audit_logs(
     db: DbSession,
-    _: AdminUser,
+    _: StaffUser,
     action: str | None = None,
     target: str | None = None,
     psp_code: str | None = Query(default=None, description="Only entries about this PSP"),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ):
+    """Admin or sub admin (read-only): the full audit trail, newest first."""
     query = select(AuditLog)
     if action:
         query = query.where(AuditLog.action.like(f"{action}%"))
