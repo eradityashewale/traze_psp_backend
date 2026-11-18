@@ -25,7 +25,7 @@ from app.db_types import BinaryString, UTCDateTime, now6
 class UserRole(str, enum.Enum):
     admin = "admin"  # manages PSPs, views and decides every PSP's requests
     psp = "psp"  # a PSP login: reviews and decides its own PSP's requests
-    sub_admin = "sub_admin"  # read-only admin: sees every PSP and request, changes nothing
+    sub_admin = "sub_admin"  # read-only admin: sees every PSP and request; only writes chat messages
 
 
 class PspStatus(str, enum.Enum):

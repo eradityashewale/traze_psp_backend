@@ -4,7 +4,7 @@ Used by portal logins (JWT). Each PSP has one thread:
 * an admin writes to any PSP, a PSP login writes to the admins and only reaches its own thread;
 * a message carries text, an attachment of any file type, or both;
 * the thread is never closed;
-* a sub admin reads every thread from the admins' side but cannot write, and reading leaves the unread state alone.
+* a sub admin reads and writes every thread from the admins' side; its reads leave the unread state alone.
 """
 
 from datetime import datetime, timezone
@@ -13,7 +13,7 @@ from typing import Annotated
 from fastapi import APIRouter, Form, Query, status
 from sqlalchemy import case, func, select, update
 
-from app.deps import CurrentUser, DbSession, WriterUser
+from app.deps import CurrentUser, DbSession
 from app.errors import AppError, ErrorCode
 from app.models import DirectMessage, PortalUser, Psp, UserRole
 from app.schemas import DirectChatOut, DirectChatSummaryOut, DirectMessageCreate, DirectMessageOut, Page
@@ -25,6 +25,13 @@ router = APIRouter(prefix="/api/v1/portal/direct-chats", tags=["Portal · Direct
 def _side(user: PortalUser) -> UserRole:
     """Which side of the thread a login is on; a sub admin reads from the admins' side."""
     return UserRole.psp if user.role == UserRole.psp else UserRole.admin
+
+
+def _from_other_side(user: PortalUser):
+    """Messages sent by the other side: the PSP for admins / sub admins, any admin or sub admin for a PSP."""
+    if _side(user) == UserRole.psp:
+        return DirectMessage.sender_role != UserRole.psp
+    return DirectMessage.sender_role == UserRole.psp
 
 
 def _thread_psp(db, user: PortalUser, psp_code: str | None) -> Psp:
@@ -48,7 +55,7 @@ def list_direct_chats(
     offset: int = Query(default=0, ge=0),
 ):
     """Inbox: an admin gets one thread per PSP, latest activity first; a PSP login gets its own thread."""
-    is_unread = (DirectMessage.sender_role != _side(user)) & DirectMessage.read_at.is_(None)
+    is_unread = _from_other_side(user) & DirectMessage.read_at.is_(None)
     stats = (
         select(
             DirectMessage.psp_id,
@@ -106,7 +113,7 @@ def get_messages(
             .where(
                 DirectMessage.psp_id == psp.id,
                 DirectMessage.id <= messages[-1].id,
-                DirectMessage.sender_role != user.role,
+                _from_other_side(user),
                 DirectMessage.read_at.is_(None),
             )
             .values(read_at=datetime.now(timezone.utc))
@@ -129,9 +136,9 @@ def get_messages(
 def send_message(
     body: Annotated[DirectMessageCreate, Form(media_type="multipart/form-data")],
     db: DbSession,
-    user: WriterUser,
+    user: CurrentUser,
 ):
-    """Send a message, an attachment, or both. An admin names the PSP; a PSP login writes to the admins."""
+    """Send a message, an attachment, or both. An admin or sub admin names the PSP; a PSP login writes to the admins."""
     psp = _thread_psp(db, user, body.psp_code)
     message = DirectMessage(
         psp_id=psp.id, sender_id=user.id, sender_name=user.full_name, sender_role=user.role, message=body.message

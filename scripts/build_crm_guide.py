@@ -27,7 +27,7 @@ from reportlab.platypus import (
 )
 
 TITLE = "PSP Portal - CRM Integration Guide"
-VERSION = "Version 1.1 | November 2026 | For the CRM development team"
+VERSION = "Version 1.2 | November 2026 | For the CRM development team"
 
 NAVY = colors.HexColor("#1F3A5F")
 MUTED = colors.HexColor("#5A6472")
@@ -127,7 +127,7 @@ story += [
     Paragraph("PSP Portal", title),
     Paragraph("CRM Integration Guide", title),
     Spacer(1, 6),
-    Paragraph("Deposits, Withdrawals and the Callback API", subtitle),
+    Paragraph("Deposits, Withdrawals, Balance and the Callback API", subtitle),
     Paragraph(VERSION, subtitle),
     Spacer(1, 16),
 ]
@@ -145,24 +145,38 @@ STEPS(
     "The portal sends a callback (HTTP POST) to your CRM with the final result.",
     "Your CRM can also ask for the status at any time with a GET call.",
 )
+P("Each PSP has a wallet in the portal. An approved deposit adds to its balance and an approved withdrawal takes "
+  "from it. A new withdrawal is accepted only if the PSP's available balance covers it (section 10).")
 TABLE([1, 3.3, 1], ["Status", "Meaning", "Callback sent?"],
       ["`pending`", "Request received, waiting for review", "No"],
       ["`processing`", "A reviewer has picked it up", "No"],
       ["`approved`", "Request approved", "Yes"],
       ["`rejected`", "Request rejected (final)", "Yes"],
       ["`reversed`", "An approved request was taken back (final, can happen once)", "Yes"])
+H2("What changed in version 1.2")
+BULLETS(
+    "**PSP balance.** New calls `GET /api/v1/balance` and `GET /api/v1/balance/transactions` (section 10).",
+    "**Withdrawals are checked against the balance.** A withdrawal larger than the PSP's available balance is "
+    "refused with `E2011`. An accepted withdrawal holds its amount until it is approved or rejected (section 9.1).",
+    "**Withdrawals no longer take `source_account_id`.** Do not send it and do not sign it (sections 6 and 9).",
+    "**Requests can also start in the portal.** The PSP team or our admins can create a deposit or withdrawal in "
+    "the portal. You still get its callback; if you do not know the ID, reply `200` and ignore it (section 4.3).",
+    "**One PSP for now.** The portal currently runs with a single PSP, so you receive one set of credentials. "
+    "Build your CRM so it can hold more than one set; more PSPs can be added later (section 7.2).",
+)
 
 H1("2. What you need to do")
 TABLE([0.5, 6, 1], ["Step", "Task", "Section"],
       ["1", "Build one callback POST API in your CRM and protect it with HTTP Basic auth (you choose the "
             "username and password).", "3.1, 4"],
       ["2", "Send us the callback URL, username and password, for UAT and for Production. Use the form in "
-            "section 14.", "3.1, 14"],
+            "section 15.", "3.1, 15"],
       ["3", "Receive and store the API credentials we send you for each PSP.", "3.2"],
       ["4", "Show the PSP's bank details and payment QR code on your deposit screen.", "7"],
       ["5", "Build the request signature and the deposit and withdrawal calls.", "5, 6, 8, 9"],
       ["6", "Handle the callback: verify it, update your record, reply 200.", "4"],
-      ["7", "Run the UAT tests with us, then go live.", "13"])
+      ["7", "Check the PSP balance before you offer a withdrawal.", "9.1, 10"],
+      ["8", "Run the UAT tests with us, then go live.", "14"])
 
 H1("3. Credentials")
 H2("3.1 Credentials you create and send to us")
@@ -254,7 +268,8 @@ STEPS(
     "Verify it with the portal public key, which you download once from `GET <base-url>/api/v1/meta/public-key` "
     "(PEM). Verify the bytes exactly as received, before parsing the JSON.",
     "**Find your record** by `deposit_id` or `withdrawal_id`. This also tells you which PSP it belongs to, and so "
-    "which `signature_salt` to use. If you do not know the ID, reply `200` and ignore it.",
+    "which `signature_salt` to use. If you do not know the ID, reply `200` and ignore it. This happens when "
+    "the request was created in the portal by the PSP team or an admin rather than by your CRM.",
     "**HMAC signature.** Build the string from these fields, sorted alphabetically, joined as "
     "`key=value&key=value`: `amount`, `currency`, `customer_email`, `deposit_id` (or `withdrawal_id`), `nonce`, "
     "`status`, `timestamp`. Compute HMAC-SHA256 with that PSP's `signature_salt` as the key, as lowercase hex, "
@@ -352,7 +367,7 @@ X-API-Secret: <api_secret>
 BULLETS(
     "HTTPS only. Plain HTTP is rejected.",
     "POST bodies are `multipart/form-data`, not JSON, because the screenshot file is sent with the request.",
-    "GET calls (payment details and status) need only these two headers, with no signature.",
+    "GET calls (payment details, balance and status) need only these two headers, with no signature.",
     "Use the token, secret, salt and account number of the PSP the request is for.",
     "Call the portal only from your CRM server, never from the customer's browser or app, so the token and "
     "secret are never exposed.",
@@ -485,7 +500,9 @@ NOTE("**Call it every time a customer opens the deposit screen. Do not cache the
      "the bank account at any time. A customer who sees an old account may send money to an account that is no "
      "longer used. The response carries `Cache-Control: no-store`.")
 H2("7.2 Working with several PSPs")
-P("Each PSP has its own credentials, bank account and QR code. To offer more than one:")
+P("The portal currently runs with **one PSP**, so today you call `payment-details` with that one set of "
+  "credentials. More PSPs can be added later with no change to the API. Each PSP then has its own "
+  "credentials, bank account, QR code and balance. To offer more than one:")
 BULLETS(
     "Call `payment-details` once for each PSP, each with that PSP's own token and secret. The calls can run in "
     "parallel.",
@@ -500,7 +517,7 @@ TABLE([0.7, 0.5, 2.3, 2.3], ["Code", "HTTP", "Meaning", "What to do"],
       ["`E2001`", "403", "PSP is inactive", "Do not offer deposits through this PSP"],
       ["`E2008`", "409", "The PSP has no payment method set up yet",
        "Do not offer deposits through this PSP; tell us"],
-      ["`E1001` to `E1014`", "401", "Credentials missing, wrong, expired or revoked", "See section 11"])
+      ["`E1001` to `E1014`", "401", "Credentials missing, wrong, expired or revoked", "See section 12"])
 
 H1("8. Create a deposit")
 CODE("POST <base-url>/api/v1/deposits")
@@ -560,8 +577,76 @@ CODE("""
 { "success": true, "withdrawal_id": "WDL-00001", "status": "pending",
   "message": "Withdrawal received and queued for review" }
 """)
+H2("9.1 Withdrawals and the PSP balance")
+BULLETS(
+    "The `amount` must not be more than the PSP's `available_balance` (section 10). If it is, the request is "
+    "refused with `422` `E2011` and nothing is created.",
+    "When the withdrawal is accepted, its amount is **held**: it stays in the balance but no other withdrawal "
+    "can use it.",
+    "If the withdrawal is approved, the amount leaves the balance. If it is rejected, the hold is released and the "
+    "amount is available again.",
+    "Call `GET /api/v1/balance` before you offer a withdrawal to the customer, so you can tell them straight away "
+    "when the PSP cannot pay it.",
+)
+P("Example `E2011` response. Here `details` holds the PSP's figures at that moment:")
+CODE("""
+{ "success": false, "error_code": "E2011",
+  "message": "Withdrawal of 50000.00 INR is more than the available balance of 42000.00 INR",
+  "details": { "balance": "45000.00", "held": "3000.00", "available_balance": "42000.00" } }
+""")
 
-H1("10. Check the status")
+H1("10. Check the PSP balance")
+CODE("""
+GET <base-url>/api/v1/balance
+GET <base-url>/api/v1/balance/transactions
+""")
+P("These need only the two headers from section 5, with no signature. The credentials tell us which PSP is calling, "
+  "and you always get that PSP's own wallet.")
+H2("10.1 Balance")
+CODE("""
+curl https://<portal-host>/api/v1/balance \\
+  -H "Authorization: Bearer <api_token>" -H "X-API-Secret: <api_secret>"
+""")
+P("Response `200`:")
+CODE("""
+{ "psp_code": "PSP001", "psp_name": "XYZ Payments", "currency": "INR",
+  "balance": "45000.00", "held": "3000.00", "available_balance": "42000.00",
+  "updated_at": "2026-11-17T12:30:00Z" }
+""")
+TABLE([1.2, 4], ["Field", "Description"],
+      ["`balance`", "Approved deposits minus approved withdrawals, after any reversals"],
+      ["`held`", "Total of the PSP's withdrawals that are still `pending` or `processing`"],
+      ["`available_balance`", "`balance` minus `held`: the largest withdrawal the PSP can take now"],
+      ["`updated_at`", "When the wallet last changed"])
+P("Amounts in these responses are strings with two decimals, for example `45000.00`.")
+H2("10.2 Balance movements")
+P("A list of every change to the wallet, newest first. Optional query parameters:")
+TABLE([1.2, 4], ["Parameter", "Description"],
+      ["`entry_type`", "Only one kind of movement, from the table below"],
+      ["`date_from`, `date_to`", "Dates as `YYYY-MM-DD` (UTC), both inclusive"],
+      ["`limit`, `offset`", "Paging. `limit` is 1 to 200, default 50"])
+CODE("""
+{ "items": [
+    { "id": 812, "psp_code": "PSP001", "psp_name": "XYZ Payments",
+      "entry_type": "withdrawal_hold", "amount": "3000.00",
+      "balance_before": "45000.00", "balance_after": "45000.00",
+      "held_before": "0.00", "held_after": "3000.00",
+      "reference": "WDL-00042", "actor_type": "psp", "actor_id": "PSP001",
+      "note": null, "created_at": "2026-11-17T12:30:00Z" } ],
+  "total": 1, "limit": 50, "offset": 0 }
+""")
+TABLE([1.3, 3, 0.7, 0.7], ["`entry_type`", "When", "Balance", "Held"],
+      ["`deposit_credit`", "A deposit is approved", "+ amount", ""],
+      ["`deposit_reversal`", "An approved deposit is reversed", "- amount", ""],
+      ["`withdrawal_hold`", "A withdrawal is created", "", "+ amount"],
+      ["`withdrawal_release`", "A withdrawal is rejected", "", "- amount"],
+      ["`withdrawal_debit`", "A withdrawal is approved", "- amount", "- amount"],
+      ["`withdrawal_reversal`", "An approved withdrawal is reversed", "+ amount", ""],
+      ["`opening_balance`", "The starting balance, set once by us", "set", ""])
+P("`amount` is always positive; `entry_type` gives the direction. `reference` is the `DEP-` or `WDL-` ID that caused "
+  "the movement, so you can match it with your own records.")
+
+H1("11. Check the status")
 CODE("""
 GET <base-url>/api/v1/deposits/{deposit_id}
 GET <base-url>/api/v1/withdrawals/{withdrawal_id}
@@ -574,7 +659,7 @@ CODE("""
   "reviewed_at": "2026-09-25T09:45:00Z", "created_at": "2026-09-25T09:30:00Z" }
 """)
 
-H1("11. Errors")
+H1("12. Errors")
 P("Every error has the same shape:")
 CODE("""
 { "success": false, "error_code": "E1005", "message": "Invalid signature", "details": [] }
@@ -589,7 +674,7 @@ TABLE([0.75, 0.45, 2.2, 2.1], ["Code", "HTTP", "Meaning", "What to do"],
       ["`E1007`", "401", "RSA `X-Signature` missing or wrong", "Only when RSA signing is switched on"],
       ["`E1008`", "403", "HTTPS required", "Call the `https://` URL"],
       ["`E1012`", "401", "Timestamp outside the 5 minute window", "Sync your server clock"],
-      ["`E1013`", "409", "Nonce already used", "That request was already accepted. See section 12."],
+      ["`E1013`", "409", "Nonce already used", "That request was already accepted. See section 13."],
       ["`E1014`", "401", "API token revoked", "Ask us for new credentials"],
       ["`E2001`", "403", "PSP is inactive", "Contact us"],
       ["`E2003`", "422", "Account does not belong to this PSP, or not to the `payment_method` sent",
@@ -605,7 +690,7 @@ TABLE([0.75, 0.45, 2.2, 2.1], ["Code", "HTTP", "Meaning", "What to do"],
 P("The full list is at `GET <base-url>/api/v1/meta/error-codes`. Interactive API documentation is at "
   "`<base-url>/docs`.")
 
-H1("12. Retries and timeouts")
+H1("13. Retries and timeouts")
 BULLETS(
     "There is no idempotency key. If you send the same request again with a new nonce, a second record is created.",
     "If a POST times out and you do not know whether it reached us, send it again within 5 minutes with the same "
@@ -613,11 +698,11 @@ BULLETS(
     "If you get `201`, the first attempt never arrived and this one is the record.",
     "If you get `E1013`, the first attempt was accepted. Do not send it again; contact us for the ID.",
     "After any other error, fix the problem and send the request with a new `timestamp`, `nonce` and `signature`.",
-    "The payment details call (section 7) only reads data, so it is always safe to repeat.",
+    "The payment details, balance and status calls only read data, so they are always safe to repeat.",
 )
 
 story.append(PageBreak())
-H1("13. UAT tests and go-live")
+H1("14. UAT tests and go-live")
 TABLE([0.3, 2, 3], ["#", "Test", "Expected result"],
       ["1", "Get the payment details", "`200` with the PSP's bank details; the QR code opens from `qr_code_url`"],
       ["2", "Create a deposit", "`201` with a `deposit_id`, status `pending`"],
@@ -629,10 +714,15 @@ TABLE([0.3, 2, 3], ["#", "Test", "Expected result"],
       ["8", "We change the PSP's bank details", "Your deposit screen shows the new details straight away"],
       ["9", "Send a request with a wrong signature", "`401` `E1005`"],
       ["10", "Send the same signed request twice", "Second one gets `409` `E1013`"],
-      ["11", "GET the status of a request", "Status matches the last callback"])
+      ["11", "GET the status of a request", "Status matches the last callback"],
+      ["12", "GET the balance", "`200`; `available_balance` = `balance` - `held`"],
+      ["13", "Create a withdrawal, then GET the balance", "`held` has gone up by the withdrawal amount"],
+      ["14", "Create a withdrawal larger than `available_balance`", "`422` `E2011`; no withdrawal is created"],
+      ["15", "We create a deposit in the portal and approve it",
+       "You receive a callback for an ID you do not know, and reply `200`"])
 P("When all tests pass, we exchange the Production credentials in the same way and go live.")
 
-H1("14. Details to send us")
+H1("15. Details to send us")
 P("Fill this in and return it through a secure channel.")
 TABLE([2.2, 1.5, 1.5], ["Item", "UAT", "Production"],
       ["Callback URL (HTTPS)", "", ""],
