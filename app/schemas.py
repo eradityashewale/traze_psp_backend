@@ -465,6 +465,8 @@ class BalanceOut(BaseModel):
     balance: Decimal  # approved deposits - approved withdrawals
     held: Decimal  # pending + processing withdrawals, reserved against the balance
     available_balance: Decimal  # the most a new withdrawal can be
+    total_deposit: Decimal = Decimal("0.00")  # sum of approved deposits
+    total_withdrawal: Decimal = Decimal("0.00")  # sum of approved withdrawals
     updated_at: datetime
 
 
@@ -472,6 +474,8 @@ class WalletTotals(BaseModel):
     balance: Decimal
     held: Decimal
     available_balance: Decimal
+    total_deposit: Decimal
+    total_withdrawal: Decimal
 
 
 class WalletList(BaseModel):

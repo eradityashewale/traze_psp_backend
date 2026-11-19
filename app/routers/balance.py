@@ -18,7 +18,9 @@ from sqlalchemy import func, select
 
 from app.deps import CallingPsp, CurrentUser, DbSession, StaffUser
 from app.errors import AppError, ErrorCode
-from app.models import Psp, PspWallet, PspWalletTransaction, UserRole, WalletEntryType
+from app.models import (
+    Deposit, Psp, PspWallet, PspWalletTransaction, TxStatus, UserRole, WalletEntryType, Withdrawal,
+)
 from app.schemas import BalanceOut, Page, WalletList, WalletTransactionOut
 
 crm_router = APIRouter(prefix="/api/v1/balance", tags=["CRM · Balance"])
@@ -72,12 +74,35 @@ def _wallet_ids(psp_id: int):
     return select(PspWallet.id).where(PspWallet.psp_id == psp_id)
 
 
+def _approved_sums(db, model, psp_ids: list[int] | None) -> dict[int | None, Decimal]:
+    """Sum of approved amounts per psp_id (or one overall sum under key None when psp_ids is None)."""
+    query = select(func.coalesce(func.sum(model.amount), 0)).where(model.status == TxStatus.approved)
+    if psp_ids is None:
+        return {None: Decimal(db.scalar(query))}
+    rows = db.execute(query.add_columns(model.psp_id).where(model.psp_id.in_(psp_ids)).group_by(model.psp_id)).all()
+    return {psp_id: Decimal(total) for total, psp_id in rows}
+
+
+def _balance_out(db, wallets: list[PspWallet]) -> list[BalanceOut]:
+    psp_ids = [w.psp_id for w in wallets]
+    deposits = _approved_sums(db, Deposit, psp_ids)
+    withdrawals = _approved_sums(db, Withdrawal, psp_ids)
+    zero = Decimal("0.00")
+    return [
+        BalanceOut.model_validate(w).model_copy(update={
+            "total_deposit": deposits.get(w.psp_id, zero),
+            "total_withdrawal": withdrawals.get(w.psp_id, zero),
+        })
+        for w in wallets
+    ]
+
+
 # ---------- CRM ----------
 
 @crm_router.get("", response_model=BalanceOut)
 def crm_balance(db: DbSession, psp: CallingPsp):
     """The calling PSP's wallet. A withdrawal above `available_balance` is refused with E2011."""
-    return _wallet(db, psp.id)
+    return _balance_out(db, [_wallet(db, psp.id)])[0]
 
 
 @crm_router.get("/transactions", response_model=Page[WalletTransactionOut])
@@ -100,7 +125,7 @@ def crm_wallet_transactions(
 def portal_balance(db: DbSession, user: CurrentUser, psp_code: str | None = Query(default=None, description=PSP_CODE_HELP)):
     """A PSP's wallet: balance, held (pending withdrawals) and available balance."""
     psp = user.psp if user.role == UserRole.psp else _psp_for_staff(db, psp_code)
-    return _wallet(db, psp.id)
+    return _balance_out(db, [_wallet(db, psp.id)])[0]
 
 
 @portal_router.get("/balance/transactions", response_model=Page[WalletTransactionOut])
@@ -141,6 +166,10 @@ def list_wallets(
     ).one()
     balance, held = Decimal(balance), Decimal(held)
     return {
-        "items": items, "total": total, "limit": limit, "offset": offset,
-        "totals": {"balance": balance, "held": held, "available_balance": balance - held},
+        "items": _balance_out(db, items), "total": total, "limit": limit, "offset": offset,
+        "totals": {
+            "balance": balance, "held": held, "available_balance": balance - held,
+            "total_deposit": _approved_sums(db, Deposit, None)[None],
+            "total_withdrawal": _approved_sums(db, Withdrawal, None)[None],
+        },
     }
